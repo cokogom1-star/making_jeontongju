@@ -2,6 +2,9 @@ from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
+from cafe24 import init_app
+init_app(app)
+
 HTML = """
 <!doctype html>
 <html lang="ko">
