@@ -9,6 +9,7 @@ app = Flask(__name__)
 
 from cafe24 import init_app, protected, public_catalog
 from coupang import KST, configured as coupang_configured, demo_orders, order_summaries, product_url
+from prelaunch import dry_run
 init_app(app)
 
 
@@ -103,9 +104,23 @@ def product_detail(product_no):
 @app.route('/admin/launch-check')
 @protected
 def launch_check():
-    return {'store_live': store_live(), 'cafe24_catalog_connected': public_catalog() is not None,
+    products = public_catalog()
+    sample = any('샘플' in p.get('product_name', '') for p in (products or []))
+    return {'store_live': store_live(), 'cafe24_catalog_connected': products is not None,
+            'cafe24_product_count': len(products or []), 'sample_products_present': sample,
             'coupang_api_configured': coupang_configured(),
-            'coupang_product_links_configured': bool(os.environ.get('COUPANG_PRODUCT_URLS'))}
+            'coupang_api_verified': False if not coupang_configured() else '별도 주문 조회 필요',
+            'coupang_product_links_configured': bool(os.environ.get('COUPANG_PRODUCT_URLS')),
+            'automatic_inventory_sync': False, 'shipping_and_returns_automation': False,
+            'dry_run_url': '/admin/dry-run',
+            'ready_to_launch': False,
+            'message': '실제 상품·판매 자격·성인인증·주문/재고 운영 절차 확인 후 출시하세요.'}
+
+
+@app.route('/admin/dry-run')
+@protected
+def prelaunch_dry_run():
+    return dry_run()
 
 
 @app.route('/admin/coupang/orders')
