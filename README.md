@@ -12,10 +12,11 @@
 - 준비 상태: `/admin/launch-check` (같은 관리자 인증). 비밀키 값은 표시하지 않습니다.
 - 다중 채널 가상 주문 점검: `/admin/dry-run`. 시연 재고 2개를 대상으로 카페24·쿠팡
   각 1건, 중복 수신 1건, 취소 1건을 계산합니다. 외부 주문 조회나 재고 변경은 없습니다.
-- 쿠팡 주문 시연: `/admin/coupang/orders`. Wing 키를 넣기 전에는 명확히 표시된
+- 쿠팡 주문 시연: `/admin/coupang/orders`. 기본 상태에서는 Wing 키가 있어도 명확히 표시된
   가상 주문 1건만 반환합니다. 고객정보는 사용하지 않습니다.
 - Wing 계정이 준비되면 Render 환경변수에 `COUPANG_VENDOR_ID`,
-  `COUPANG_ACCESS_KEY`, `COUPANG_SECRET_KEY`를 설정합니다. 이후 주문 확인 화면은
+  `COUPANG_ACCESS_KEY`, `COUPANG_SECRET_KEY`를 설정합니다. 실제 주문을 읽기 전용으로
+  확인할 때만 `COUPANG_ORDER_READ_ENABLED=true`를 별도로 설정합니다. 이후 주문 확인 화면은
   최근 60분의 결제완료(`ACCEPT`) 발주서 메타데이터를 읽기 전용으로 조회합니다.
   고객 이름, 연락처, 배송지는 이 화면에 저장하거나 반환하지 않습니다.
 - 카페24 상품번호와 쿠팡 상품 페이지 연결은 `COUPANG_PRODUCT_URLS`에 JSON으로
