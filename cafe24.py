@@ -74,6 +74,39 @@ def save_token(conn, token):
                  (os.environ['CAFE24_MALL_ID'], encoded))
 
 
+def public_catalog(product_no=None):
+    """Only expose products that Cafe24 marks as visible to shoppers."""
+    if not config_ok():
+        return None
+    with database() as conn:
+        schema(conn)
+        row = conn.execute('SELECT encrypted_token FROM ourisul_cafe24_token '
+                           'WHERE mall_id = %s FOR UPDATE', (os.environ['CAFE24_MALL_ID'],)).fetchone()
+        if not row:
+            return None
+        token = json.loads(Fernet(os.environ['TOKEN_ENCRYPTION_KEY']).decrypt(row[0].encode()))
+        path = '/admin/products' + (('/' + str(product_no)) if product_no else '')
+        params = None if product_no else {'limit': 24, 'display': 'T'}
+
+        def fetch():
+            return requests.get(api_base() + path,
+                                headers={'Authorization': 'Bearer ' + token['access_token']},
+                                params=params, timeout=(5, 20))
+
+        response = fetch()
+        if response.status_code == 401:
+            token = exchange({'grant_type': 'refresh_token', 'refresh_token': token['refresh_token']})
+            save_token(conn, token)
+            conn.commit()
+            response = fetch()
+        if response.status_code == 404 and product_no:
+            return []
+        response.raise_for_status()
+        data = response.json()
+        raw = [data.get('product')] if product_no else data.get('products', [])
+        return [p for p in raw if isinstance(p, dict) and p.get('display') == 'T']
+
+
 @bp.after_request
 def private_headers(response):
     response.headers['Cache-Control'] = 'no-store'
