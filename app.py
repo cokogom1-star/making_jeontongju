@@ -14,7 +14,17 @@ init_app(app)
 
 
 def store_live():
-    return os.environ.get('STORE_LIVE', '').lower() == 'true'
+    return os.environ.get('STORE_LIVE', '').lower() == 'true' and bool(approved_product_numbers())
+
+
+def approved_product_numbers():
+    return {int(value.strip()) for value in os.environ.get('LIVE_PRODUCT_NOS', '').split(',')
+            if value.strip().isdigit() and int(value.strip()) > 0}
+
+
+def purchase_enabled(product):
+    return (store_live() and product['selling'] and product['number'] in approved_product_numbers()
+            and '샘플' not in product['name'])
 
 
 def products_for_page(product_no=None):
@@ -44,8 +54,10 @@ def products_for_page(product_no=None):
                        'image': image, 'price': price,
                        'summary': product.get('summary_description') or '',
                        'selling': product.get('selling') == 'T',
+                       'purchase_enabled': False,
                        'mall_url': f'https://{os.environ.get("CAFE24_MALL_ID", "posteam1")}.cafe24.com/product/detail.html?product_no={number}',
                        'coupang_url': product_url(number)})
+        result[-1]['purchase_enabled'] = purchase_enabled(result[-1])
     return result, None
 
 HTML = """
@@ -78,7 +90,7 @@ footer{padding:60px 7%;border-top:1px solid #d8d1c4}@media(max-width:900px){.des
 <div class="hero"><div><div class="eyebrow">TRADITIONAL KOREAN LIQUOR</div><h1>오래된 지혜를<br>오늘의 술로.</h1><p class="lead">우리 조상이 빚어온 술에는 시간과 계절, 사람의 손길이 담겨 있습니다.<br>우리술은 그 가치를 오늘에 전하고자 합니다.</p><a class="button" href="#collection">우리술 만나기</a></div></div>
 <section id="about" class="intro"><div class="eyebrow">OUR STORY</div><h2>마시기 위한 술,<br>기억하기 위한 전통.</h2><p>세계에는 각 나라를 대표하는 술이 있습니다. 우리에게도 오랜 시간 이어져 온 훌륭한 술과 그것을 빚어온 지혜가 있습니다.</p><p>우리술은 그 전통을 오늘의 사람들에게 다시 소개하고, 한국의 술 문화를 세계에 전하고자 합니다.</p><a class="text-link" href="/about">브랜드 이야기 더 보기 →</a></section>
 <section id="collection"><div class="eyebrow">OUR COLLECTION</div><div class="cards"><div class="card"><span>01</span><h3>청주</h3><p>맑고 섬세한 향을 가진 우리 술</p></div><div class="card"><span>02</span><h3>탁주</h3><p>쌀과 누룩이 만들어내는 깊은 풍미</p></div><div class="card"><span>03</span><h3>소주</h3><p>앞으로 만나게 될 새로운 우리술</p></div></div><a class="text-link" href="/stories">술 이야기 더 보기 →</a></section>
-<section id="shop"><div class="eyebrow">SHOP OURISUL</div><h2>우리술 둘러보기</h2>{% if notice %}<p class="notice">{{notice}}</p>{% elif not products %}<p class="notice">등록된 상품이 없습니다.</p>{% else %}<div class="catalog">{% for product in products %}<a class="product" href="/products/{{product.number}}"><div class="product-image">{% if product.image %}<img src="{{product.image}}" alt="{{product.name}}" loading="lazy" referrerpolicy="no-referrer">{% else %}우리술{% endif %}</div><div class="product-copy"><h3>{{product.name}}</h3><p>{{product.price}}{% if not live or not product.selling %} · 판매 준비 중{% endif %}</p></div></a>{% endfor %}</div>{% endif %}<a class="text-link" href="/products">상품 전체 보기 →</a></section>
+<section id="shop"><div class="eyebrow">SHOP OURISUL</div><h2>우리술 둘러보기</h2>{% if notice %}<p class="notice">{{notice}}</p>{% elif not products %}<p class="notice">등록된 상품이 없습니다.</p>{% else %}<div class="catalog">{% for product in products %}<a class="product" href="/products/{{product.number}}"><div class="product-image">{% if product.image %}<img src="{{product.image}}" alt="{{product.name}}" loading="lazy" referrerpolicy="no-referrer">{% else %}우리술{% endif %}</div><div class="product-copy"><h3>{{product.name}}</h3><p>{{product.price}}{% if not live %} · 시연용 가격{% elif not product.purchase_enabled %} · 판매 준비 중{% endif %}</p></div></a>{% endfor %}</div>{% endif %}<a class="text-link" href="/products">상품 전체 보기 →</a></section>
 <section id="craft" class="story"><div class="eyebrow">CRAFT NOTES</div><h2 class="section-title">한 잔에 담기는 시간</h2><div class="steps"><article><strong>원료</strong><p>술의 바탕이 되는 재료를 살핍니다.</p></article><article><strong>발효</strong><p>누룩과 시간이 빚어내는 향과 맛을 소개합니다.</p></article><article><strong>기록</strong><p>앞으로 선보일 술의 제작 과정을 이곳에 기록할 예정입니다.</p></article></div><a class="text-link" href="/craft">양조 이야기 더 보기 →</a></section>
 <section id="guide" class="guide"><div class="eyebrow">SHOPPING GUIDE</div><h2 class="section-title">이용 안내</h2>{% if live %}<p>상품 상세에서 판매 채널을 선택하면 해당 채널의 주문 페이지로 이동합니다. 주문·결제·배송 안내는 선택한 판매 채널에서 확인해 주세요.</p>{% else %}<p>현재는 운영 준비 단계입니다. 표시된 상품은 시연용이며 이 사이트에서 주문을 받지 않습니다. 정식 상품과 판매 채널이 준비되면 구매 방법을 안내하겠습니다.</p>{% endif %}</section>
 <section id="faq" class="faq"><div class="eyebrow">FAQ</div><h2 class="section-title">자주 묻는 질문</h2><details><summary>지금 상품을 주문할 수 있나요?</summary><p>{% if live %}상품 상세에 표시된 판매 채널에서 주문할 수 있습니다.{% else %}아직 주문을 받지 않습니다. 현재 상품은 시연용입니다.{% endif %}</p></details><details><summary>어떤 술을 소개하나요?</summary><p>청주와 탁주를 중심으로 우리 술의 종류와 이야기를 소개하고 있습니다. 실제 판매 상품은 출시 전에 안내합니다.</p></details><details><summary>쿠팡에서도 주문할 수 있나요?</summary><p>{% if live %}쿠팡에 등록된 상품은 상세 페이지에 쿠팡 구매 버튼이 표시됩니다.{% else %}쿠팡 판매 연동을 준비하고 있습니다. 실제 상품 등록 전에는 쿠팡 주문을 받지 않습니다.{% endif %}</p></details></section>
@@ -107,8 +119,8 @@ PAGE_META = {
 PAGE_BODY = {
     'about': '''<h2>우리 술의 이야기를 오늘에</h2><p>세계에는 각 나라를 대표하는 술이 있습니다. 우리에게도 오랜 시간 이어져 온 술과 그것을 빚어온 지혜가 있습니다.</p><p>우리술은 청주와 탁주 등 우리 술을 소개하고, 앞으로 만들어 갈 제품과 양조 기록을 이곳에 담으려 합니다.</p><div class="page-links"><a class="button" href="/stories">술 이야기 보기</a><a class="button" href="/craft">양조 이야기 보기</a></div>''',
     'stories': '''<h2>우리 술을 알아가기</h2><div class="flow-grid"><article><strong>청주</strong><p>맑게 걸러낸 술. 원료와 양조 방식에 따라 향과 맛이 다양합니다.</p></article><article><strong>탁주</strong><p>쌀과 누룩이 빚어내는 질감과 풍미를 만날 수 있습니다.</p></article><article><strong>소주</strong><p>증류를 통해 만들어지는 술. 앞으로 소개할 내용을 준비 중입니다.</p></article></div><p>이곳의 설명은 술 종류에 관한 소개이며 현재 판매 상품의 성분이나 특징을 뜻하지 않습니다.</p><a class="button" href="/products">상품 보기</a>''',
-    'products': '''{% if notice %}<p class="notice">{{notice}}</p>{% elif not products %}<p class="notice">등록된 상품이 없습니다.</p>{% else %}<div class="catalog">{% for product in products %}<a class="product" href="/products/{{product.number}}"><div class="product-image">{% if product.image %}<img src="{{product.image}}" alt="{{product.name}}" loading="lazy" referrerpolicy="no-referrer">{% else %}우리술{% endif %}</div><div class="product-copy"><h3>{{product.name}}</h3><p>{{product.price}}{% if not live or not product.selling %} · 판매 준비 중{% endif %}</p><span>상세 보기 →</span></div></a>{% endfor %}</div>{% endif %}<p class="notice">{% if live %}구매 가능 여부와 판매 채널은 각 상품의 상세 화면에서 확인해 주세요.{% else %}상품을 눌러 상세 화면을 볼 수 있습니다. 현재는 주문을 받지 않습니다.{% endif %}</p>''',
-    'craft': '''<h2>한 잔에 담기는 시간</h2><div class="flow-grid"><article><strong>01 · 원료</strong><p>술의 바탕이 되는 재료와 그 선택에 관한 기록을 준비합니다.</p></article><article><strong>02 · 발효</strong><p>누룩과 시간이 빚어내는 변화를 앞으로 소개합니다.</p></article><article><strong>03 · 기록</strong><p>실제로 선보일 술의 제작 과정과 결과는 확인 후 게시합니다.</p></article></div><p>현재는 브랜드의 양조 기록을 공개하기 전 단계입니다. 게시 전까지 구체적인 제조 방식이나 생산 사실을 단정하지 않습니다.</p><a class="button" href="/stories">술 종류 알아보기</a>''',
+    'products': '''{% if notice %}<p class="notice">{{notice}}</p>{% elif not products %}<p class="notice">등록된 상품이 없습니다.</p>{% else %}<div class="catalog">{% for product in products %}<a class="product" href="/products/{{product.number}}"><div class="product-image">{% if product.image %}<img src="{{product.image}}" alt="{{product.name}}" loading="lazy" referrerpolicy="no-referrer">{% else %}우리술{% endif %}</div><div class="product-copy"><h3>{{product.name}}</h3><p>{{product.price}}{% if not live %} · 시연용 가격{% elif not product.purchase_enabled %} · 판매 준비 중{% endif %}</p><span>상세 보기 →</span></div></a>{% endfor %}</div>{% endif %}<p class="notice">{% if live %}구매 가능 여부와 판매 채널은 각 상품의 상세 화면에서 확인해 주세요.{% else %}상품을 눌러 상세 화면을 볼 수 있습니다. 현재는 주문을 받지 않습니다.{% endif %}</p>''',
+    'craft': '''<h2>한 잔에 담기는 시간</h2><div class="flow-grid"><article><strong>01 · 원료</strong><p>술의 바탕이 되는 재료와 그 선택에 관한 기록을 준비합니다.</p></article><article><strong>02 · 발효</strong><p>누룩과 시간이 빚어내는 변화를 앞으로 소개합니다.</p></article><article><strong>03 · 기록</strong><p>실제로 선보일 술의 제작 과정과 결과는 확인 후 게시합니다.</p></article></div><p>제품과 양조 기록은 준비되는 대로 소개하겠습니다.</p><a class="button" href="/stories">술 종류 알아보기</a>''',
     'guide': '''<h2>이용 흐름</h2><div class="flow-grid"><article><strong>01 · 상품 살펴보기</strong><p>상품 목록에서 관심 있는 술을 선택합니다.</p></article><article><strong>02 · 상세 확인하기</strong><p>상품별 설명과 판매 준비 상태를 확인합니다.</p></article><article><strong>03 · 판매 채널 이동</strong><p>{% if live %}판매가 시작된 상품은 상세 화면에서 연결된 판매 채널로 이동합니다.{% else %}정식 판매가 시작되면 상세 화면에서 판매 채널을 안내할 예정입니다.{% endif %}</p></article></div><p>{% if live %}주문, 결제, 배송 및 교환·반품 조건은 실제 주문하는 판매 채널의 안내를 확인해 주세요.{% else %}현재는 시연 단계로 주문, 결제, 배송을 제공하지 않습니다. 실제 판매 조건과 고객 응대 채널은 운영 시작 전에 게시합니다.{% endif %}</p><a class="button" href="/products">상품 목록으로</a>''',
     'faq': '''<div class="faq"><details><summary>지금 상품을 주문할 수 있나요?</summary><p>{% if live %}판매 중인 상품은 상세 화면에 표시된 판매 채널로 이동해 주문할 수 있습니다.{% else %}아직 주문을 받지 않습니다. 화면에 보이는 상품은 시연용입니다.{% endif %}</p></details><details><summary>쿠팡에서도 주문할 수 있나요?</summary><p>{% if live %}쿠팡 구매 링크가 표시된 상품만 해당 채널에서 확인할 수 있습니다.{% else %}쿠팡 판매 연동을 준비 중이며 실제 상품 등록과 주문은 시작하지 않았습니다.{% endif %}</p></details><details><summary>상품 가격과 정보가 확정되었나요?</summary><p>{% if live %}최신 가격과 상세 정보는 연결된 판매 채널에서 확인해 주세요.{% else %}현재 상품은 시연용이므로 실제 출시 가격이나 제품 정보를 의미하지 않습니다.{% endif %}</p></details><details><summary>배송이나 교환·반품은 어디에서 확인하나요?</summary><p>{% if live %}주문한 판매 채널의 안내 및 고객센터를 이용해 주세요.{% else %}아직 주문이 열리지 않았습니다. 운영 시작 전에 판매 채널별 안내를 게시하겠습니다.{% endif %}</p></details><details><summary>문의는 어떻게 하나요?</summary><p>공식 문의 창구를 준비하고 있습니다. 준비가 완료되면 문의 화면에 게시하겠습니다.</p></details></div><a class="button" href="/contact">문의 안내 보기</a>''',
     'contact': '''<h2>공식 문의 안내</h2><p>현재 공식 문의용 이메일과 연락처를 공개하기 전입니다. 운영 시작 전 이 화면에서 문의 방법과 응대 시간을 안내하겠습니다.</p><p>상품 주문에 관한 문의는 판매가 시작된 뒤 실제 주문한 채널의 고객센터를 통해 접수할 수 있습니다.</p><div class="page-links"><a class="button" href="/faq">자주 묻는 질문</a><a class="button" href="/">홈으로 돌아가기</a></div>''',
@@ -120,11 +132,31 @@ def content_page(page):
     if page not in PAGE_META:
         abort(404)
     eyebrow, title, lead = PAGE_META[page]
+    if page == 'products' and store_live():
+        lead = '우리술 상품을 살펴보세요. 구매 가능한 상품은 상세 화면에서 판매 채널을 확인할 수 있습니다.'
     # Only fixed, application-owned page markup is inserted into this template.
     shell = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}} | 우리술</title><style>''' + HTML.split('<style>', 1)[1].split('</style>', 1)[0] + '''</style></head><body>{% if not live %}<div class="preview">운영 준비 중 · 현재 상품은 시연용이며 이 사이트에서는 주문을 받지 않습니다.</div>{% endif %}''' + HTML.split('<header>', 1)[1].split('</header>', 1)[0].join(['<header>', '</header>']) + '''<main><div class="page-hero"><span class="eyebrow">{{eyebrow}}</span><h1>{{title}}</h1><p>{{lead}}</p></div><section class="page-section">''' + PAGE_BODY[page] + '''</section></main>''' + HTML.split('<footer>', 1)[1].split('</footer>', 1)[0].join(['<footer>', '</footer>']) + '''<script>document.querySelectorAll('.mobile-nav a').forEach(function(link){link.addEventListener('click',function(){document.querySelector('.mobile-nav').open=false})});document.querySelectorAll('a[href="/'''+page+'''"]').forEach(function(link){link.classList.add('active-link');link.setAttribute('aria-current','page')})</script></body></html>'''
     products, notice = products_for_page() if page == 'products' else ([], None)
     return render_template_string(shell, eyebrow=eyebrow, title=title, lead=lead,
                                   products=products, notice=notice, live=store_live())
+
+
+def shared_chrome():
+    css = HTML.split('<style>', 1)[1].split('</style>', 1)[0]
+    header = '<header>' + HTML.split('<header>', 1)[1].split('</header>', 1)[0] + '</header>'
+    footer = '<footer>' + HTML.split('<footer>', 1)[1].split('</footer>', 1)[0] + '</footer>'
+    return css, header, footer
+
+
+def message_page(title, message, status):
+    css, header, footer = shared_chrome()
+    markup = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}} | 우리술</title><style>''' + css + '''</style></head><body>''' + header + '''<main><div class="page-hero"><span class="eyebrow">OURISUL</span><h1>{{title}}</h1><p>{{message}}</p><div class="page-links"><a class="button" href="/">홈으로</a><a class="button" href="/products">상품 목록</a></div></div></main>''' + footer + '''</body></html>'''
+    return render_template_string(markup, title=title, message=message), status
+
+
+@app.errorhandler(404)
+def missing_page(error):
+    return message_page('페이지를 찾을 수 없습니다', '주소를 확인하거나 메뉴에서 다시 찾아주세요.', 404)
 
 
 @app.route('/products/<int:product_no>')
@@ -134,10 +166,13 @@ def product_detail(product_no):
     products, notice = products_for_page(product_no)
     if not products:
         if notice:
-            return render_template_string('<meta charset="utf-8"><p>{{notice}}</p><a href="/">홈으로</a>', notice=notice), 503
+            return message_page('상품을 불러오지 못했습니다', notice + ' 잠시 후 다시 시도해 주세요.', 503)
         abort(404)
     product = products[0]
-    return render_template_string('''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{p.name}} | 우리술</title><style>{{css}}</style>{% if not live %}<div class="preview">운영 준비 중 · 시연용 상품이며 주문을 받지 않습니다.</div>{% endif %}<header><a class="logo" href="/">우리술</a><nav><a class="text-link" href="/products">상품 목록</a></nav></header><section class="detail"><div class="product-image">{% if p.image %}<img src="{{p.image}}" alt="{{p.name}}">{% else %}우리술{% endif %}</div><div><span class="eyebrow">OURISUL COLLECTION</span><h1>{{p.name}}</h1><p>{{p.summary|striptags}}</p><h2>{{p.price}}</h2>{% if live and p.selling %}<a class="button" href="{{p.mall_url}}" rel="noopener noreferrer">카페24 쇼핑몰에서 구매하기</a>{% if p.coupang_url %} <a class="button" href="{{p.coupang_url}}" rel="noopener noreferrer">쿠팡에서 구매하기</a>{% endif %}{% else %}<p>주문 준비 중입니다.</p>{% endif %}<br><a class="back" href="/products">← 상품 목록으로</a></div></section>''', p=product, live=store_live(), css=HTML.split('<style>',1)[1].split('</style>',1)[0])
+    css, header, footer = shared_chrome()
+    markup = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{p.name}} | 우리술</title><style>''' + css + '''</style></head><body>{% if not live %}<div class="preview">운영 준비 중 · 시연용 상품이며 주문을 받지 않습니다.</div>{% endif %}''' + header + '''<main><section class="detail"><div class="product-image">{% if p.image %}<img src="{{p.image}}" alt="{{p.name}}">{% else %}우리술{% endif %}</div><div><span class="eyebrow">OURISUL COLLECTION</span><h1>{{p.name}}</h1><p>{% if p.summary %}{{p.summary|striptags}}{% else %}실제 상품 정보는 출시 전에 안내합니다.{% endif %}</p><h2>{{p.price}}</h2>{% if not live %}<p>시연용 가격 · 출시 가격 미정</p>{% endif %}{% if p.purchase_enabled %}<a class="button" href="{{p.mall_url}}" rel="noopener noreferrer">카페24 쇼핑몰에서 구매하기</a>{% if p.coupang_url %} <a class="button" href="{{p.coupang_url}}" rel="noopener noreferrer">쿠팡에서 구매하기</a>{% endif %}{% else %}<p>주문 준비 중입니다.</p>{% endif %}<br><a class="back" href="/products">← 상품 목록으로</a></div></section></main>''' + footer + '''</body></html>'''
+    return render_template_string(markup, p=product, live=store_live())
+
 
 
 @app.route('/admin/launch-check')
@@ -147,6 +182,8 @@ def launch_check():
     sample = any('샘플' in p.get('product_name', '') for p in (products or []))
     return {'store_live': store_live(), 'cafe24_catalog_connected': products is not None,
             'cafe24_product_count': len(products or []), 'sample_products_present': sample,
+            'approved_product_numbers': sorted(approved_product_numbers()),
+            'store_live_requested': os.environ.get('STORE_LIVE', '').lower() == 'true',
             'coupang_api_configured': coupang_configured(),
             'coupang_api_verified': False if not coupang_configured() else '별도 주문 조회 필요',
             'coupang_product_links_configured': bool(os.environ.get('COUPANG_PRODUCT_URLS')),
