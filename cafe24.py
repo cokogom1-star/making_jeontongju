@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import time
+from datetime import date, datetime
 from functools import wraps
 from urllib.parse import urlencode
 
@@ -90,7 +91,7 @@ def public_catalog(product_no=None):
         path = '/admin/products' + (('/' + str(product_no)) if product_no else '')
         params = None if product_no else {'limit': 24, 'display': 'T'}
 
-        def fetch():
+        def fetch(offset):
             return requests.get(api_base() + path,
                                 headers={'Authorization': 'Bearer ' + token['access_token']},
                                 params=params, timeout=(5, 20))
@@ -109,6 +110,87 @@ def public_catalog(product_no=None):
         return [p for p in raw if isinstance(p, dict) and p.get('display') == 'T']
 
 
+def order_summaries(start_date, end_date, limit=100):
+    """Read recent order metadata without retaining buyer or receiver details.
+
+    Returns None when the store has not been connected. The caller supplies
+    inclusive calendar dates in the Cafe24 store's timezone.
+    """
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, datetime):
+        end_date = end_date.date()
+    if (not isinstance(start_date, date) or not isinstance(end_date, date)
+            or start_date > end_date or (end_date - start_date).days > 90
+            or type(limit) is not int or not 1 <= limit <= 100):
+        raise ValueError('Invalid order date range or limit')
+    if not config_ok():
+        return None
+    with database() as conn:
+        schema(conn)
+        row = conn.execute('SELECT encrypted_token FROM ourisul_cafe24_token '
+                           'WHERE mall_id = %s FOR UPDATE', (os.environ['CAFE24_MALL_ID'],)).fetchone()
+        if not row:
+            return None
+        token = json.loads(Fernet(os.environ['TOKEN_ENCRYPTION_KEY']).decrypt(row[0].encode()))
+
+        def fetch(offset):
+            return requests.get(api_base() + '/admin/orders',
+                                headers={'Authorization': 'Bearer ' + token['access_token']},
+                                params={'start_date': start_date.isoformat(),
+                                        'end_date': end_date.isoformat(),
+                                        'limit': limit, 'offset': offset,
+                                        'sort': 'order_date', 'order': 'desc',
+                                        'embed': 'items'},
+                                timeout=(5, 20))
+
+        result = []
+        offset = 0
+        while True:
+            response = fetch(offset)
+            if response.status_code == 401:
+                token = exchange({'grant_type': 'refresh_token', 'refresh_token': token['refresh_token']})
+                save_token(conn, token)
+                conn.commit()
+                response = fetch(offset)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get('orders'), list):
+                raise ValueError('Invalid Cafe24 orders response')
+            orders = data['orders']
+            if len(orders) > limit:
+                raise ValueError('Oversized Cafe24 orders response')
+            for order in orders:
+                if not isinstance(order, dict):
+                    raise ValueError('Invalid Cafe24 order')
+                order_id = order.get('order_id')
+                ordered_at = order.get('order_date')
+                if not isinstance(order_id, str) or not order_id.strip():
+                    raise ValueError('Invalid Cafe24 order ID')
+                if not isinstance(ordered_at, str) or not ordered_at.strip():
+                    raise ValueError('Invalid Cafe24 order date')
+                # Cafe24 payment_status: F/M awaiting payment; T/A/P paid.
+                # C/R are cancellation/return states, not new actionable orders.
+                payment = order.get('payment_status')
+                status = order.get('order_status')
+                if (payment not in ('T', 'A', 'P') or not isinstance(status, str)
+                        or not status.startswith('N') or status == 'N00'):
+                    continue
+                items = order.get('items', [])
+                if not isinstance(items, list):
+                    raise ValueError('Invalid Cafe24 order items')
+                result.append({'order_id': order_id,
+                               'ordered_at': ordered_at,
+                               'status': status,
+                               'item_count': len(items)})
+            if len(orders) < limit:
+                break
+            offset += limit
+            if offset > 8000:
+                raise ValueError('Cafe24 order window exceeds pagination limit')
+        return result
+
+
 @bp.after_request
 def private_headers(response):
     response.headers['Cache-Control'] = 'no-store'
@@ -124,7 +206,7 @@ def connect():
         session['connect_csrf'] = secrets.token_urlsafe(32)
         return render_template_string('''<!doctype html><html lang="ko"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>우리술 연결</title>
-<h1>카페24 연결</h1><p>상품 조회 권한을 연결합니다.</p>
+<h1>카페24 연결</h1><p>상품 및 주문 조회 권한을 연결합니다.</p>
 <form method="post"><input type="hidden" name="csrf" value="{{csrf}}">
 <button>카페24에서 연결 승인하기</button></form></html>''', csrf=session['connect_csrf'])
     expected = session.pop('connect_csrf', '')
@@ -139,7 +221,8 @@ def connect():
                      (hashlib.sha256(state.encode()).hexdigest(), time.time() + 600))
     return redirect(api_base() + '/oauth/authorize?' + urlencode({
         'response_type': 'code', 'client_id': os.environ['CAFE24_CLIENT_ID'],
-        'state': state, 'redirect_uri': REDIRECT_URI, 'scope': 'mall.read_product'}))
+        'state': state, 'redirect_uri': REDIRECT_URI,
+        'scope': 'mall.read_product,mall.read_order'}))
 
 
 @bp.route('/oauth/callback')

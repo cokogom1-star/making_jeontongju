@@ -200,6 +200,8 @@ def launch_check():
             'coupang_api_configured': coupang_configured(),
             'coupang_api_verified': False,
             'coupang_order_read_enabled': os.environ.get('COUPANG_ORDER_READ_ENABLED', '').lower() == 'true',
+            'cafe24_order_read_enabled': os.environ.get('CAFE24_ORDER_READ_ENABLED', '').lower() == 'true',
+            'slack_order_webhook_configured': bool(os.environ.get('SLACK_ORDER_WEBHOOK_URL')),
             'coupang_product_links_configured': bool(os.environ.get('COUPANG_PRODUCT_URLS')),
             'automatic_inventory_sync': False, 'shipping_and_returns_automation': False,
             'dry_run_url': '/admin/dry-run',
