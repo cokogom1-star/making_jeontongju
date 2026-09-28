@@ -11,7 +11,9 @@ app = Flask(__name__)
 from cafe24 import init_app, protected, public_catalog
 from coupang import KST, configured as coupang_configured, demo_orders, order_summaries, product_url
 from prelaunch import dry_run
+from direct_checkout import bp as direct_checkout_bp, enabled as direct_checkout_test_enabled
 init_app(app)
+app.register_blueprint(direct_checkout_bp)
 
 
 def store_live():
@@ -202,6 +204,8 @@ def launch_check():
             'coupang_order_read_enabled': os.environ.get('COUPANG_ORDER_READ_ENABLED', '').lower() == 'true',
             'cafe24_order_read_enabled': os.environ.get('CAFE24_ORDER_READ_ENABLED', '').lower() == 'true',
             'slack_order_webhook_configured': bool(os.environ.get('SLACK_ORDER_WEBHOOK_URL')),
+            'direct_checkout_test_enabled': direct_checkout_test_enabled(),
+            'direct_checkout_live_enabled': False,
             'coupang_product_links_configured': bool(os.environ.get('COUPANG_PRODUCT_URLS')),
             'automatic_inventory_sync': False, 'shipping_and_returns_automation': False,
             'dry_run_url': '/admin/dry-run',
