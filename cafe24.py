@@ -76,6 +76,8 @@ def save_token(conn, token):
 
 def public_catalog(product_no=None):
     """Only expose products that Cafe24 marks as visible to shoppers."""
+    if product_no is not None and (type(product_no) is not int or product_no <= 0):
+        return []
     if not config_ok():
         return None
     with database() as conn:

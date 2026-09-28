@@ -67,9 +67,24 @@ def order_summaries(start, end, status='ACCEPT', get=requests.get):
     payload = response.json()
     if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
         raise ValueError('Unexpected Coupang response')
-    return [{'order_id': item.get('orderId'), 'status': item.get('status'),
-             'ordered_at': item.get('orderedAt'), 'item_count': len(item.get('orderItems') or [])}
-            for item in payload['data'] if isinstance(item, dict)]
+    summaries = []
+    for item in payload['data']:
+        if not isinstance(item, dict):
+            raise ValueError('Unexpected Coupang order')
+        order_id = item.get('orderId')
+        status_value = item.get('status')
+        ordered_at = item.get('orderedAt')
+        order_items = item.get('orderItems')
+        if (type(order_id) not in (str, int) or not str(order_id)
+                or (type(order_id) is int and order_id <= 0)
+                or not isinstance(status_value, str) or not status_value
+                or not isinstance(ordered_at, str) or not ordered_at
+                or not isinstance(order_items, list)
+                or any(not isinstance(line, dict) for line in order_items)):
+            raise ValueError('Unexpected Coupang order')
+        summaries.append({'order_id': order_id, 'status': status_value,
+                          'ordered_at': ordered_at, 'item_count': len(order_items)})
+    return summaries
 
 
 def demo_orders():
