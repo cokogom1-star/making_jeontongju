@@ -91,7 +91,7 @@ def public_catalog(product_no=None):
         path = '/admin/products' + (('/' + str(product_no)) if product_no else '')
         params = None if product_no else {'limit': 24, 'display': 'T'}
 
-        def fetch(offset):
+        def fetch():
             return requests.get(api_base() + path,
                                 headers={'Authorization': 'Bearer ' + token['access_token']},
                                 params=params, timeout=(5, 20))
