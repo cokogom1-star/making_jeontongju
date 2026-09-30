@@ -1,0 +1,42 @@
+name: Ourisul system verifier
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: verify
+          POSTGRES_PASSWORD: verify_ephemeral
+          POSTGRES_DB: ourisul_verify
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.3'
+      - run: pip install -r requirements.txt
+      - name: Verify production application with isolated PostgreSQL
+        env:
+          VERIFY_DATABASE_URL: postgresql://verify:verify_ephemeral@127.0.0.1:5432/ourisul_verify
+        run: python verify_system.py
+      - name: Save verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ourisul-verification
+          path: verification-result.json
+          if-no-files-found: warn
