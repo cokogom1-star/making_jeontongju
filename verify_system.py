@@ -14,6 +14,7 @@ from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
 import secrets
 import sys
+import traceback
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock, patch
@@ -127,6 +128,62 @@ def main():
                         encrypted = conn.execute('SELECT encrypted_token FROM ourisul_cafe24_token').fetchone()[0]
                     self.assertNotIn('synthetic-access', encrypted)
                     self.assertEqual(cafe24.public_catalog(-1), [])
+
+                def test_catalog_missing_hidden_and_disconnected(self):
+                    with patch.object(cafe24.requests, 'get', return_value=response(status=404)):
+                        self.assertEqual(self.get('/products/999').status_code, 404)
+                    hidden = {'product_no': 999, 'display': 'F', 'product_name': 'Private catalog item'}
+                    with patch.object(cafe24.requests, 'get', return_value=response({'product': hidden})):
+                        page = self.get('/products/999')
+                        self.assertEqual(page.status_code, 404)
+                        self.assertNotIn(b'Private catalog item', page.data)
+                    with patch.object(cafe24.requests, 'get', return_value=response({'products': []})):
+                        page = self.get('/products')
+                        self.assertEqual(page.status_code, 200)
+                        self.assertIn('등록된 상품이 없습니다.', page.get_data(as_text=True))
+                    with cafe24.database() as conn:
+                        conn.execute('DELETE FROM ourisul_cafe24_token')
+                    with patch.object(cafe24.requests, 'get') as fetch:
+                        self.assertEqual(self.get('/products/1').status_code, 503)
+                        self.assertIn('상품 준비 중입니다.', self.get('/products').get_data(as_text=True))
+                        fetch.assert_not_called()
+
+                def test_catalog_provider_failure_has_safe_recovery_page(self):
+                    # Public list preserves navigation; detail distinguishes an outage from 404.
+                    failure = requests.Timeout('synthetic-private-diagnostic')
+                    with patch.object(cafe24.requests, 'get', side_effect=failure):
+                        listing = self.get('/products')
+                        detail = self.get('/products/1')
+                    self.assertEqual(listing.status_code, 200)
+                    self.assertEqual(detail.status_code, 503)
+                    for page in (listing, detail):
+                        text = page.get_data(as_text=True)
+                        self.assertIn('상품 정보를 불러오지 못했습니다.', text)
+                        self.assertNotIn('synthetic-private-diagnostic', text)
+                        self.assertNotIn('synthetic-access', text)
+                    with patch.object(cafe24.requests, 'get', return_value=response(status=500)):
+                        self.assertEqual(self.get('/products/1').status_code, 503)
+
+                def test_catalog_invalid_rows_duplicate_and_unsafe_image(self):
+                    valid = {'product_no': 7, 'display': 'T', 'product_name': 'Visible unique item',
+                             'price': 'NaN', 'list_image': 'javascript:alert(1)', 'selling': 'T'}
+                    items = [valid, dict(valid, product_name='Duplicate item'),
+                             {'display': 'T', 'product_name': 'Missing number'},
+                             {'product_no': 'invalid', 'display': 'T', 'product_name': 'Invalid number'},
+                             {'product_no': 0, 'display': 'T', 'product_name': 'Zero number'}]
+                    with patch.object(cafe24.requests, 'get', return_value=response({'products': items})):
+                        page = self.get('/products')
+                    self.assertEqual(page.status_code, 200)
+                    text = page.get_data(as_text=True)
+                    self.assertIn('Visible unique item', text)
+                    self.assertIn('가격 문의', text)
+                    for excluded in ('Duplicate item', 'Missing number', 'Invalid number', 'Zero number', 'javascript:alert(1)'):
+                        self.assertNotIn(excluded, text)
+                    with patch.object(cafe24.requests, 'get', return_value=response({'product': valid})):
+                        detail = self.get('/products/7')
+                        self.assertEqual(detail.status_code, 200)
+                        self.assertNotIn('이동하여 주문하기', detail.get_data(as_text=True))
+                        self.assertEqual(self.get('/products/8').status_code, 404)
 
                 def test_catalog_token_refresh_and_failure(self):
                     refreshed = {'access_token': 'refreshed-access', 'refresh_token': 'refreshed-refresh',
@@ -251,10 +308,16 @@ def main():
                     report['tests'].append({'name': test._testMethodName, 'status': 'passed'})
                 def addFailure(self, test, err):
                     super().addFailure(test, err)
-                    report['tests'].append({'name': test._testMethodName, 'status': 'failed', 'error_type': err[0].__name__})
+                    report['tests'].append({'name': test._testMethodName, 'status': 'failed', 'error_type': err[0].__name__,
+                                              'locations': [{'file': Path(frame.filename).name, 'line': frame.lineno,
+                                                             'function': frame.name}
+                                                            for frame in traceback.extract_tb(err[2])][-5:]})
                 def addError(self, test, err):
                     super().addError(test, err)
-                    report['tests'].append({'name': test._testMethodName, 'status': 'error', 'error_type': err[0].__name__})
+                    report['tests'].append({'name': test._testMethodName, 'status': 'error', 'error_type': err[0].__name__,
+                                              'locations': [{'file': Path(frame.filename).name, 'line': frame.lineno,
+                                                             'function': frame.name}
+                                                            for frame in traceback.extract_tb(err[2])][-5:]})
 
             result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=Results).run(
                 unittest.defaultTestLoader.loadTestsFromTestCase(IntegrationChecks))
