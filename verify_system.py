@@ -67,6 +67,7 @@ def main():
                'FLASK_SECRET_KEY': secrets.token_hex(32), 'ADMIN_PASSWORD': secrets.token_hex(20),
                'TOKEN_ENCRYPTION_KEY': Fernet.generate_key().decode(),
                'DIRECT_CHECKOUT_TEST_ENABLED': 'true',
+               'SYNTHETIC_ORDER_TEST_ENABLED': 'true',
                'TOSS_TEST_CLIENT_KEY': 'test_gck_synthetic',
                'TOSS_TEST_SECRET_KEY': 'test_gsk_synthetic', 'STORE_LIVE': 'false'}
         with patch.dict(os.environ, env, clear=True), patch.object(
@@ -76,6 +77,7 @@ def main():
             import coupang
             import direct_checkout
             import order_notifications as notices
+            import test_orders
             from app import app
             app.config.update(TESTING=True)
 
@@ -96,7 +98,9 @@ def main():
                         cafe24.schema(conn)
                         direct_checkout.schema(conn)
                         notices.schema(conn)
-                        conn.execute('TRUNCATE ourisul_cafe24_token, ourisul_test_payments, ourisul_order_notice')
+                        test_orders.schema(conn)
+                        conn.execute('TRUNCATE ourisul_cafe24_token, ourisul_test_payments, '
+                                     'ourisul_test_orders, ourisul_order_notice')
                         cafe24.save_token(conn, {'access_token': 'synthetic-access',
                                                'refresh_token': 'synthetic-refresh'})
 
@@ -248,6 +252,53 @@ def main():
                         self.assertEqual(self.get('/admin/payments/test').status_code, 404)
                     with cafe24.database() as conn:
                         self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_payments').fetchone()[0], 0)
+
+                def test_synthetic_order_auth_csrf_gate_atomic_and_idempotent(self):
+                    path = '/admin/orders/test'
+                    self.assertEqual(self.client.get(path).status_code, 401)
+                    self.assertEqual(self.post(path, data={'csrf': 'bad'}).status_code, 403)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(path).status_code, 404)
+                    self.assertEqual(self.get(path).status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                        expected_id = sess['test_order_id']
+                    self.assertEqual(self.post(path, data={'csrf': 'bad'}).status_code, 403)
+                    first = self.post(path, data={'csrf': csrf})
+                    self.assertEqual(first.status_code, 200)
+                    self.assertEqual(first.json, {'order_id': expected_id, 'created': True,
+                                                  'notice': 'queued_not_deliverable'})
+                    self.assertEqual(self.post(path, data={'csrf': csrf}).json['created'], False)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT order_id, status, item_count '
+                                                      'FROM ourisul_test_orders').fetchall(),
+                                         [(expected_id, 'TEST_CREATED', 0)])
+                        self.assertEqual(conn.execute('SELECT source, order_id, status, item_count, '
+                                                      'attempts, delivered_at FROM ourisul_order_notice').fetchall(),
+                                         [('synthetic', expected_id, 'TEST_CREATED', 0, 0, None)])
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_payments').fetchone()[0], 0)
+                    sender = Mock(return_value=response())
+                    webhook = 'https://hooks.slack.com/services/TEST/TEST/TEST'
+                    self.assertEqual(notices.deliver_pending(cafe24.database, webhook, post=sender),
+                                     {'delivered': 0, 'failed': 0})
+                    sender.assert_not_called()
+
+                def test_synthetic_order_notice_failure_rolls_back_order(self):
+                    with cafe24.database() as conn:
+                        conn.execute("ALTER TABLE ourisul_order_notice ADD CONSTRAINT no_synthetic "
+                                     "CHECK (source <> 'synthetic')")
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    try:
+                        with self.assertRaises(Exception):
+                            test_orders.record_test_order(order_id)
+                        with cafe24.database() as conn:
+                            self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_orders '
+                                                          'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
+                            self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_order_notice '
+                                                          'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
+                    finally:
+                        with cafe24.database() as conn:
+                            conn.execute('ALTER TABLE ourisul_order_notice DROP CONSTRAINT no_synthetic')
 
                 def test_payment_amount_approval_and_duplicate(self):
                     order = self.create_payment()

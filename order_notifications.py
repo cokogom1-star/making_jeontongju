@@ -82,7 +82,8 @@ def _claim(connect):
         return conn.execute('''UPDATE ourisul_order_notice n SET
             lease_until = now() + interval '60 seconds', attempts = attempts + 1
             FROM (SELECT source, order_id FROM ourisul_order_notice
-                  WHERE delivered_at IS NULL AND next_attempt_at <= now()
+                  WHERE source IN ('cafe24', 'coupang')
+                    AND delivered_at IS NULL AND next_attempt_at <= now()
                     AND (lease_until IS NULL OR lease_until < now())
                   ORDER BY created_at, source, order_id LIMIT 1 FOR UPDATE SKIP LOCKED) queued
             WHERE n.source = queued.source AND n.order_id = queued.order_id
