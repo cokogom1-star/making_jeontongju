@@ -289,7 +289,7 @@ def main():
                                      "CHECK (source <> 'synthetic')")
                     order_id = 'TEST-' + secrets.token_hex(16)
                     try:
-                        with self.assertRaises(Exception):
+                        with self.assertRaises(psycopg.errors.CheckViolation):
                             test_orders.record_test_order(order_id)
                         with cafe24.database() as conn:
                             self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_orders '
