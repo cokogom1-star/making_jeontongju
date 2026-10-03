@@ -8,11 +8,19 @@ its `synthetic` notice in one database transaction. It requires
 It does not create a payment, real order, customer record, or shipment.
 
 The regular Slack worker deliberately claims only Cafe24 and Coupang notices.
-Synthetic notices remain queued but cannot be sent by that worker. A separate
-test webhook and an explicitly enabled synthetic-only sender are still needed;
-do not use the regular order webhook for test delivery. The actual Slack
-`#ourisul-orders` channel (`C0C4WV04AF3`) was confirmed from the September 28
-connection-test record, but no real Slack send was made in this change.
+Synthetic notices remain queued until `send_synthetic_orders.py` is run against
+an explicit disposable `VERIFY_DATABASE_URL`. `--pending` counts queued test
+notices without sending. Delivery requires
+`SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED=true` and
+`SLACK_TEST_ORDER_WEBHOOK_URL`, which must differ from the regular
+`SLACK_ORDER_WEBHOOK_URL`. The sender claims only synthetic rows backed by a
+test-order record, sends an ID-only `[테스트·미운영]` message, and retries failures
+with a fenced lease. The regular worker cannot claim synthetic notices.
+
+No Slack test webhook or disposable database credentials were available for a
+live delivery check. No external Slack message was sent. The verifier exercises
+the sender with a fake Slack response and an isolated PostgreSQL schema; it
+does not establish real Slack connectivity or channel routing.
 
 ## Remaining product work
 

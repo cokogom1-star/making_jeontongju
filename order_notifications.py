@@ -11,6 +11,7 @@ import re
 from urllib.parse import urlparse
 
 import requests
+from psycopg.errors import UndefinedTable
 
 
 SOURCES = {'cafe24', 'coupang'}
@@ -75,14 +76,20 @@ def webhook_valid(url):
             and re.fullmatch(r'/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]+', parsed.path) is not None)
 
 
-def _claim(connect):
+def _claim(connect, synthetic=False):
     # Claim atomically so multiple web workers cannot post the same row at once.
+    # Both predicates are fixed here: callers cannot turn the test sender into
+    # a general-purpose sender for real order rows.
+    source_filter = ("source = 'synthetic' AND order_id ~ '^TEST-[0-9a-f]{32}$' "
+                     "AND EXISTS (SELECT 1 FROM ourisul_test_orders t "
+                     "WHERE t.order_id = ourisul_order_notice.order_id)"
+                     if synthetic else "source IN ('cafe24', 'coupang')")
     with connect() as conn:
         schema(conn)
         return conn.execute('''UPDATE ourisul_order_notice n SET
             lease_until = now() + interval '60 seconds', attempts = attempts + 1
             FROM (SELECT source, order_id FROM ourisul_order_notice
-                  WHERE source IN ('cafe24', 'coupang')
+                  WHERE ''' + source_filter + '''
                     AND delivered_at IS NULL AND next_attempt_at <= now()
                     AND (lease_until IS NULL OR lease_until < now())
                   ORDER BY created_at, source, order_id LIMIT 1 FOR UPDATE SKIP LOCKED) queued
@@ -91,24 +98,20 @@ def _claim(connect):
                       n.item_count, n.attempts''').fetchone()
 
 
-def deliver_pending(connect, webhook_url=None, post=requests.post, limit=20):
-    """Attempt queued notifications; failures remain queued with backoff.
-
-    Invoke from a scheduled worker. No webhook URL or response body is logged.
-    """
-    webhook_url = webhook_url or os.environ.get('SLACK_ORDER_WEBHOOK_URL')
+def _deliver_pending(connect, webhook_url, post, limit, synthetic):
     if not webhook_valid(webhook_url):
-        raise ValueError('Slack order webhook is not configured')
+        raise ValueError('Slack webhook is not configured')
     if type(limit) is not int or not 0 <= limit <= 100:
         raise ValueError('Invalid delivery limit')
     delivered = 0
     failed = 0
     for _ in range(limit):
-        row = _claim(connect)
+        row = _claim(connect, synthetic=synthetic)
         if row is None:
             break
         source, order_id, status, ordered_at, item_count, attempts = row
-        message = (f'우리술 주문 접수 | {source} | 주문번호 {order_id} | '
+        message = (f'[테스트·미운영] {order_id}' if synthetic else
+                   f'우리술 주문 접수 | {source} | 주문번호 {order_id} | '
                    f'상태 {status} | 시각 {ordered_at} | 품목 수 {item_count}')
         success = False
         try:
@@ -119,18 +122,52 @@ def deliver_pending(connect, webhook_url=None, post=requests.post, limit=20):
             pass
         with connect() as conn:
             if success:
-                conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now(), lease_until = NULL
-                    WHERE source = %s AND order_id = %s AND delivered_at IS NULL''', (source, order_id))
-                delivered += 1
+                result = conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now(), lease_until = NULL
+                    WHERE source = %s AND order_id = %s AND attempts = %s AND delivered_at IS NULL''',
+                                      (source, order_id, attempts))
+                delivered += result.rowcount
             else:
                 # Exponential retry, capped at one hour. Keep errors and webhook secrets out of DB.
                 delay = min(3600, 30 * 2 ** min(attempts - 1, 7))
-                conn.execute('''UPDATE ourisul_order_notice SET lease_until = NULL,
+                result = conn.execute('''UPDATE ourisul_order_notice SET lease_until = NULL,
                     next_attempt_at = now() + (%s * interval '1 second')
-                    WHERE source = %s AND order_id = %s AND delivered_at IS NULL''',
-                             (delay, source, order_id))
-                failed += 1
+                    WHERE source = %s AND order_id = %s AND attempts = %s AND delivered_at IS NULL''',
+                             (delay, source, order_id, attempts))
+                failed += result.rowcount
     return {'delivered': delivered, 'failed': failed}
+
+
+def deliver_pending(connect, webhook_url=None, post=requests.post, limit=20):
+    """Attempt real channel notices; failures remain queued with backoff."""
+    return _deliver_pending(connect, webhook_url or os.environ.get('SLACK_ORDER_WEBHOOK_URL'),
+                            post, limit, synthetic=False)
+
+
+def deliver_synthetic_pending(connect, post=requests.post, limit=20):
+    """Explicitly send only synthetic notices to the separate test webhook."""
+    if os.environ.get('SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED') != 'true':
+        raise ValueError('Synthetic notifications are disabled')
+    test_webhook = os.environ.get('SLACK_TEST_ORDER_WEBHOOK_URL')
+    real_webhook = os.environ.get('SLACK_ORDER_WEBHOOK_URL')
+    if test_webhook and real_webhook:
+        test_url, real_url = urlparse(test_webhook), urlparse(real_webhook)
+        if ((test_url.scheme, test_url.hostname, test_url.path) ==
+                (real_url.scheme, real_url.hostname, real_url.path)):
+            raise ValueError('Test and real Slack webhooks must differ')
+    return _deliver_pending(connect, test_webhook,
+                            post, limit, synthetic=True)
+
+
+def synthetic_pending_count(connect):
+    """Count eligible synthetic notices without claiming or delivering them."""
+    try:
+        with connect() as conn:
+            return conn.execute('''SELECT count(*) FROM ourisul_order_notice n
+                WHERE n.source = 'synthetic' AND n.order_id ~ '^TEST-[0-9a-f]{32}$'
+                  AND EXISTS (SELECT 1 FROM ourisul_test_orders t WHERE t.order_id = n.order_id)
+                  AND n.delivered_at IS NULL''').fetchone()[0]
+    except UndefinedTable as exc:
+        raise ValueError('Synthetic order tables are not initialized') from exc
 
 
 def poll_and_deliver(sources, start, end, connect, webhook_url=None, post=requests.post):
