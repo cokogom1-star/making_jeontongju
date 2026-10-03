@@ -1,8 +1,8 @@
-"""Administrator-created synthetic orders, with a durable but unsent notice.
+"""Administrator-created synthetic orders, with a durable optional test notice.
 
 These rows are not purchases, payments, or fulfillment orders. The regular
-Slack worker intentionally ignores the synthetic outbox source; enabling test
-delivery requires a separate, explicit operation in a future change.
+Slack worker intentionally ignores the synthetic outbox source. A separately
+enabled test sender can deliver these notices to the test webhook.
 """
 
 import os
@@ -71,7 +71,7 @@ def create_test_order():
         return render_template_string('''<!doctype html><html lang="ko"><meta charset="utf-8">
 <meta name="robots" content="noindex,nofollow"><title>합성 주문 테스트</title>
 <h1>합성 주문 테스트</h1><p>고객·상품·결제·배송이 없는 테스트 주문을 DB에 저장합니다.
-Slack 알림은 대기열에 기록되지만 발송되지 않습니다.</p>
+Slack 알림은 대기열에 기록되며, 별도 설정된 테스트 발송기만 전송할 수 있습니다.</p>
 <form method="post"><input type="hidden" name="csrf" value="{{csrf}}">
 <button type="submit">합성 주문 기록</button></form></html>''', csrf=session['test_order_csrf'])
     token = session.get('test_order_csrf', '')
@@ -79,4 +79,4 @@ Slack 알림은 대기열에 기록되지만 발송되지 않습니다.</p>
     if not token or not secrets.compare_digest(token, request.form.get('csrf', '')) or not order_id:
         abort(403)
     created = record_test_order(order_id)
-    return {'order_id': order_id, 'created': created, 'notice': 'queued_not_deliverable'}
+    return {'order_id': order_id, 'created': created, 'notice': 'queued_for_test_sender'}
