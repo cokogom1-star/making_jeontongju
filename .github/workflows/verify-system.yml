@@ -35,7 +35,7 @@ jobs:
         run: python verify_system.py
       - name: Save verification evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ourisul-verification
           path: verification-result.json

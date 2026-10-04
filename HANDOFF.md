@@ -54,6 +54,20 @@ tracking service or a real shipping integration. The verifier checks the HTML
 flow, escaping, gate, JSON compatibility, and read-only database behavior with
 isolated PostgreSQL; it does not test a live browser or carrier.
 
+## CI artifact upload runtime
+
+The verifier uploads `verification-result.json` with
+`actions/upload-artifact@v6`, keeping the artifact name and
+`if-no-files-found: error` behavior unchanged. GitHub's
+[Node 20 deprecation notice](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/)
+and the [v6 release](https://github.com/actions/upload-artifact/releases/tag/v6.0.0)
+identify v6 as a Node 24 action requiring Actions Runner 2.327.1 or newer.
+The previous main run used GitHub-hosted runner 2.337.0, but the change is
+not verified by a new PR run yet. Before merging, confirm the current PR
+revision passes `verify` and `promotion-ready`, the artifact contains
+`verification-result.json`, and the upload step has no Node 20 or
+`punycode` deprecation warning. Recheck main after merge before deploy.
+
 ## Remaining product work
 
 - Design each menu page beyond the current public landing/catalog pages.
