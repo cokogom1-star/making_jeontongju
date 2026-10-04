@@ -4,7 +4,7 @@ import os
 import re
 from urllib.parse import urlparse
 
-from flask import Flask, abort, render_template_string
+from flask import Flask, abort, render_template_string, request
 
 app = Flask(__name__)
 
@@ -32,14 +32,15 @@ def purchase_enabled(product):
             and '샘플' not in product['name'] and bool(product['mall_url']))
 
 
-def products_for_page(product_no=None):
+def products_for_page(product_no=None, page=1, with_next=False):
     try:
-        products = public_catalog(product_no)
+        fetched = public_catalog(product_no, page=page, with_next=with_next)
+        products, has_next = fetched if with_next else (fetched, False)
     except Exception:
         app.logger.error('Catalog request failed')
-        return [], '상품 정보를 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.'
+        return [], '상품 정보를 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.', False
     if products is None:
-        return [], '상품 준비 중입니다. 카페24 연결 후 이곳에 상품이 표시됩니다.'
+        return [], '상품 준비 중입니다. 카페24 연결 후 이곳에 상품이 표시됩니다.', False
     result = []
     seen_numbers = set()
     mall_id = os.environ.get('CAFE24_MALL_ID', '')
@@ -69,7 +70,7 @@ def products_for_page(product_no=None):
                                     if valid_mall else None),
                        'coupang_url': product_url(number)})
         result[-1]['purchase_enabled'] = purchase_enabled(result[-1])
-    return result, None
+    return result, None, has_next
 
 HTML = """
 <!doctype html>
@@ -117,7 +118,7 @@ footer{padding:60px 7%;border-top:1px solid #d8d1c4}@media(max-width:900px){.des
 
 @app.route("/")
 def home():
-    products, notice = products_for_page()
+    products, notice, _ = products_for_page()
     return render_template_string(HTML.replace('href="#collection">우리술 만나기', 'href="#shop">우리술 만나기'), products=products, notice=notice, live=store_live())
 
 
@@ -141,6 +142,12 @@ PAGE_BODY = {
     'contact': '''<h2>공식 문의 안내</h2><p>현재 공식 문의용 이메일과 연락처를 공개하기 전입니다. 운영 시작 전 이 화면에서 문의 방법과 응대 시간을 안내하겠습니다.</p><p>상품 주문에 관한 문의는 판매가 시작된 뒤 실제 주문한 채널의 고객센터를 통해 접수할 수 있습니다.</p><div class="page-links"><a class="button" href="/faq">자주 묻는 질문</a><a class="button" href="/">홈으로 돌아가기</a></div>''',
 }
 
+PAGE_BODY['products'] += '''<nav class="page-links" aria-label="상품 페이지">
+{% if page_number > 1 %}<a href="/products?page={{page_number - 1}}">이전 상품</a>{% endif %}
+<span>상품 {{page_number}}페이지</span>
+{% if has_next %}<a href="/products?page={{page_number + 1}}">다음 상품</a>{% endif %}
+</nav>{% if has_next is none %}<p class="notice">이 목록의 표시 한도에 도달했습니다. 나머지 상품은 카페24 상점에서 확인해 주세요.</p>{% endif %}'''
+
 
 @app.route('/<page>')
 def content_page(page):
@@ -151,9 +158,17 @@ def content_page(page):
         lead = '우리술 상품을 살펴보세요. 구매 가능한 상품은 상세 화면에서 판매 채널을 확인할 수 있습니다.'
     # Only fixed, application-owned page markup is inserted into this template.
     shell = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}} | 우리술</title><style>''' + HTML.split('<style>', 1)[1].split('</style>', 1)[0] + '''</style></head><body><a class="skip-link" href="#main">본문으로 건너뛰기</a>{% if not live %}<div class="preview">운영 준비 중 · 현재 상품은 시연용이며 이 사이트에서는 주문을 받지 않습니다.</div>{% endif %}''' + HTML.split('<header>', 1)[1].split('</header>', 1)[0].join(['<header>', '</header>']) + '''<main id="main"><div class="page-hero"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a> / <span aria-current="page">{{title}}</span></nav><span class="eyebrow">{{eyebrow}}</span><h1>{{title}}</h1><p>{{lead}}</p></div><section class="page-section">''' + PAGE_BODY[page] + '''</section></main>''' + HTML.split('<footer>', 1)[1].split('</footer>', 1)[0].join(['<footer>', '</footer>']) + '''<script>document.querySelectorAll('.mobile-nav a').forEach(function(link){link.addEventListener('click',function(){document.querySelector('.mobile-nav').open=false})});document.querySelectorAll('a[href="/'''+page+'''"]').forEach(function(link){link.classList.add('active-link');link.setAttribute('aria-current','page')})</script></body></html>'''
-    products, notice = products_for_page() if page == 'products' else ([], None)
+    page_number = 1
+    if page == 'products':
+        raw_page = request.args.get('page', '1')
+        if len(raw_page) > 3 or not raw_page.isascii() or not raw_page.isdecimal() or not 1 <= int(raw_page) <= 209:
+            abort(404)
+        page_number = int(raw_page)
+    products, notice, has_next = (products_for_page(page=page_number, with_next=True)
+                                  if page == 'products' else ([], None, False))
     return render_template_string(shell, eyebrow=eyebrow, title=title, lead=lead,
-                                  products=products, notice=notice, live=store_live())
+                                  products=products, notice=notice, live=store_live(),
+                                  page_number=page_number, has_next=has_next)
 
 
 def shared_chrome():
@@ -178,7 +193,7 @@ def missing_page(error):
 def product_detail(product_no):
     if product_no <= 0:
         abort(404)
-    products, notice = products_for_page(product_no)
+    products, notice, _ = products_for_page(product_no)
     if not products:
         if notice:
             return message_page('상품을 불러오지 못했습니다', notice + ' 잠시 후 다시 시도해 주세요.', 503)
