@@ -520,28 +520,28 @@ def main():
                     with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL': test_webhook,
                                                  'SLACK_ORDER_WEBHOOK_URL': real_webhook}):
                         with self.assertRaisesRegex(ValueError, 'disabled'):
-                            notices.deliver_synthetic_pending(cafe24.database, post=sender)
+                            notices.deliver_synthetic_pending(cafe24.database, order_id, post=sender)
                         sender.assert_not_called()
                         with patch.dict(os.environ, {'SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED': 'true',
                                                      'SLACK_TEST_ORDER_WEBHOOK_URL': ''}):
                             with self.assertRaisesRegex(ValueError, 'not configured'):
-                                notices.deliver_synthetic_pending(cafe24.database, post=sender)
+                                notices.deliver_synthetic_pending(cafe24.database, order_id, post=sender)
                         sender.assert_not_called()
                         with patch.dict(os.environ, {'SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED': 'true',
                                                      'STORE_LIVE': 'false'}):
                             with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL': real_webhook}):
                                 with self.assertRaisesRegex(ValueError, 'must differ'):
-                                    notices.deliver_synthetic_pending(cafe24.database, post=sender)
+                                    notices.deliver_synthetic_pending(cafe24.database, order_id, post=sender)
                             with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL':
                                                          real_webhook.replace('hooks.slack.com', 'HOOKS.SLACK.COM')}):
                                 with self.assertRaisesRegex(ValueError, 'must differ'):
-                                    notices.deliver_synthetic_pending(cafe24.database, post=sender)
+                                    notices.deliver_synthetic_pending(cafe24.database, order_id, post=sender)
                             sender.assert_not_called()
                             with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
                                                          'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
                                 self.assertEqual(send_synthetic_orders.run(['--pending']), {'pending': 1})
                             failed = Mock(side_effect=requests.Timeout)
-                            self.assertEqual(notices.deliver_synthetic_pending(cafe24.database, post=failed),
+                            self.assertEqual(notices.deliver_synthetic_pending(cafe24.database, order_id, post=failed),
                                              {'delivered': 0, 'failed': 1})
                             self.assertEqual(failed.call_args.args[0], test_webhook)
                             self.assertEqual(failed.call_args.kwargs['json'],
@@ -555,12 +555,12 @@ def main():
                                 self.assertEqual(real_attempts, 0)
                                 conn.execute('''UPDATE ourisul_order_notice SET next_attempt_at=now()-interval '1 second'
                                     WHERE source='synthetic' ''')
-                            self.assertEqual(notices.deliver_synthetic_pending(cafe24.database, post=sender),
+                            self.assertEqual(notices.deliver_synthetic_pending(cafe24.database, order_id, post=sender),
                                              {'delivered': 1, 'failed': 0})
                             self.assertEqual(sender.call_args.args[0], test_webhook)
                             self.assertEqual(sender.call_args.kwargs['json'],
                                              {'text': f'[테스트·미운영] {order_id}'})
-                            self.assertEqual(notices.deliver_synthetic_pending(cafe24.database, post=sender),
+                            self.assertEqual(notices.deliver_synthetic_pending(cafe24.database, order_id, post=sender),
                                              {'delivered': 0, 'failed': 0})
                             self.assertEqual(sender.call_count, 1)
                             with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
@@ -594,15 +594,15 @@ def main():
                                         conn.execute('''UPDATE ourisul_order_notice
                                             SET lease_until = now() - interval '1 second'
                                             WHERE source = 'synthetic' AND order_id = %s''', (order_id,))
-                                    newer = notices._claim(cafe24.database, synthetic=True)
+                                    newer = notices._claim(cafe24.database, synthetic=True, order_id=order_id)
                                     self.assertEqual(newer[1], order_id)
                                     self.assertEqual(newer[5], 2)
                                     if old_post_succeeds:
                                         return response()
                                     raise requests.Timeout('synthetic stale attempt')
 
-                                result = notices.deliver_synthetic_pending(cafe24.database,
-                                                                          post=reclaim, limit=1)
+                                result = notices.deliver_synthetic_pending(cafe24.database, order_id,
+                                                                          post=reclaim)
                                 self.assertEqual(result, {'delivered': 0, 'failed': 0})
                                 with cafe24.database() as conn:
                                     row = conn.execute('''SELECT attempts, delivered_at,
@@ -610,6 +610,89 @@ def main():
                                         FROM ourisul_order_notice WHERE source = 'synthetic'
                                         AND order_id = %s''', (order_id,)).fetchone()
                                 self.assertEqual(row, (2, None, True, True))
+
+                def test_synthetic_sender_requires_exact_ready_id(self):
+                    older = 'TEST-' + secrets.token_hex(16)
+                    selected = 'TEST-' + secrets.token_hex(16)
+                    orphan = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(older))
+                    self.assertTrue(test_orders.record_test_order(selected))
+                    for source in ('cafe24', 'coupang'):
+                        self.assertEqual(notices.record_orders(source, [{
+                            'order_id': 'VERIFY-' + source, 'status': 'N10',
+                            'ordered_at': '2026-09-29T00:00:00Z', 'item_count': 1,
+                        }], cafe24.database), 1)
+                    with cafe24.database() as conn:
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count)
+                            VALUES ('synthetic', %s, 'TEST_CREATED', '2026-09-29T00:00:00Z', 0)''',
+                            (orphan,))
+                    sender = Mock(return_value=response())
+                    with patch.dict(os.environ, {
+                        'SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED': 'true',
+                        'SLACK_TEST_ORDER_WEBHOOK_URL':
+                            'https://hooks.slack.com/services/TEST/TEST/SYNTHETIC',
+                        'SLACK_ORDER_WEBHOOK_URL':
+                            'https://hooks.slack.com/services/TEST/TEST/REAL',
+                    }):
+                        with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
+                                                     'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
+                            with patch('sys.stderr', new_callable=io.StringIO):
+                                with self.assertRaises(SystemExit):
+                                    send_synthetic_orders.run([])
+                                with self.assertRaises(SystemExit):
+                                    send_synthetic_orders.run(['--limit', '20'])
+                            self.assertEqual(send_synthetic_orders.run(['--pending']), {'pending': 2})
+                            with self.assertRaisesRegex(ValueError, 'Invalid synthetic order ID'):
+                                send_synthetic_orders.run(['--send', older.upper()])
+                        sender.assert_not_called()
+                        missing = 'TEST-' + secrets.token_hex(16)
+                        original_send = notices.deliver_synthetic_pending
+                        with patch.object(notices, 'deliver_synthetic_pending',
+                                          side_effect=lambda connect, order_id: original_send(
+                                              connect, order_id, post=sender)) as command_send:
+                            with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
+                                                         'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
+                                for order_id in (missing, orphan):
+                                    self.assertEqual(send_synthetic_orders.run(['--send', order_id]),
+                                                     {'delivered': 0, 'failed': 0})
+                                self.assertEqual(send_synthetic_orders.run(['--send', selected]),
+                                                 {'delivered': 1, 'failed': 0})
+                            self.assertEqual([call.args[1] for call in command_send.call_args_list],
+                                             [missing, orphan, selected])
+                        self.assertEqual(sender.call_count, 1)
+                        self.assertEqual(sender.call_args.kwargs['json'],
+                                         {'text': f'[테스트·미운영] {selected}'})
+                        self.assertEqual(notices.deliver_synthetic_pending(
+                            cafe24.database, selected, post=sender),
+                            {'delivered': 0, 'failed': 0})
+                        with cafe24.database() as conn:
+                            conn.execute('''UPDATE ourisul_order_notice
+                                SET lease_until = now() + interval '60 seconds'
+                                WHERE source = 'synthetic' AND order_id = %s''', (older,))
+                        self.assertEqual(notices.deliver_synthetic_pending(
+                            cafe24.database, older, post=sender),
+                            {'delivered': 0, 'failed': 0})
+                        with cafe24.database() as conn:
+                            conn.execute('''UPDATE ourisul_order_notice
+                                SET lease_until = now() - interval '1 second',
+                                    next_attempt_at = now() + interval '60 seconds'
+                                WHERE source = 'synthetic' AND order_id = %s''', (older,))
+                        self.assertEqual(notices.deliver_synthetic_pending(
+                            cafe24.database, older, post=sender),
+                            {'delivered': 0, 'failed': 0})
+                        self.assertEqual(sender.call_count, 1)
+                        with cafe24.database() as conn:
+                            rows = conn.execute('''SELECT source, order_id, attempts,
+                                delivered_at IS NOT NULL FROM ourisul_order_notice
+                                ORDER BY source, order_id''').fetchall()
+                        self.assertEqual(rows, sorted([
+                            ('cafe24', 'VERIFY-cafe24', 0, False),
+                            ('coupang', 'VERIFY-coupang', 0, False),
+                            ('synthetic', older, 0, False),
+                            ('synthetic', selected, 1, True),
+                            ('synthetic', orphan, 0, False),
+                        ]))
 
                 def test_synthetic_sender_cli_rejects_missing_or_unsafe_database(self):
                     with patch.dict(os.environ, {'VERIFY_DATABASE_URL': ''}):

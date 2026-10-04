@@ -76,11 +76,20 @@ def webhook_valid(url):
             and re.fullmatch(r'/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]+', parsed.path) is not None)
 
 
-def _claim(connect, synthetic=False):
+def _valid_synthetic_id(order_id):
+    if not isinstance(order_id, str) or not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id):
+        raise ValueError('Invalid synthetic order ID')
+
+
+def _claim(connect, synthetic=False, order_id=None):
     # Claim atomically so multiple web workers cannot post the same row at once.
     # Both predicates are fixed here: callers cannot turn the test sender into
     # a general-purpose sender for real order rows.
-    source_filter = ("source = 'synthetic' AND order_id ~ '^TEST-[0-9a-f]{32}$' "
+    if synthetic:
+        _valid_synthetic_id(order_id)
+    elif order_id is not None:
+        raise ValueError('Order ID selection is only available for synthetic notices')
+    source_filter = ("source = 'synthetic' AND order_id = %s "
                      "AND EXISTS (SELECT 1 FROM ourisul_test_orders t "
                      "WHERE t.order_id = ourisul_order_notice.order_id)"
                      if synthetic else "source IN ('cafe24', 'coupang')")
@@ -95,10 +104,10 @@ def _claim(connect, synthetic=False):
                   ORDER BY created_at, source, order_id LIMIT 1 FOR UPDATE SKIP LOCKED) queued
             WHERE n.source = queued.source AND n.order_id = queued.order_id
             RETURNING n.source, n.order_id, n.status, n.ordered_at,
-                      n.item_count, n.attempts''').fetchone()
+                      n.item_count, n.attempts''', (order_id,) if synthetic else ()).fetchone()
 
 
-def _deliver_pending(connect, webhook_url, post, limit, synthetic):
+def _deliver_pending(connect, webhook_url, post, limit, synthetic, order_id=None):
     if not webhook_valid(webhook_url):
         raise ValueError('Slack webhook is not configured')
     if type(limit) is not int or not 0 <= limit <= 100:
@@ -106,12 +115,12 @@ def _deliver_pending(connect, webhook_url, post, limit, synthetic):
     delivered = 0
     failed = 0
     for _ in range(limit):
-        row = _claim(connect, synthetic=synthetic)
+        row = _claim(connect, synthetic=synthetic, order_id=order_id)
         if row is None:
             break
-        source, order_id, status, ordered_at, item_count, attempts = row
-        message = (f'[테스트·미운영] {order_id}' if synthetic else
-                   f'우리술 주문 접수 | {source} | 주문번호 {order_id} | '
+        source, claimed_order_id, status, ordered_at, item_count, attempts = row
+        message = (f'[테스트·미운영] {claimed_order_id}' if synthetic else
+                   f'우리술 주문 접수 | {source} | 주문번호 {claimed_order_id} | '
                    f'상태 {status} | 시각 {ordered_at} | 품목 수 {item_count}')
         success = False
         try:
@@ -124,7 +133,7 @@ def _deliver_pending(connect, webhook_url, post, limit, synthetic):
             if success:
                 result = conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now(), lease_until = NULL
                     WHERE source = %s AND order_id = %s AND attempts = %s AND delivered_at IS NULL''',
-                                      (source, order_id, attempts))
+                                      (source, claimed_order_id, attempts))
                 delivered += result.rowcount
             else:
                 # Exponential retry, capped at one hour. Keep errors and webhook secrets out of DB.
@@ -132,7 +141,7 @@ def _deliver_pending(connect, webhook_url, post, limit, synthetic):
                 result = conn.execute('''UPDATE ourisul_order_notice SET lease_until = NULL,
                     next_attempt_at = now() + (%s * interval '1 second')
                     WHERE source = %s AND order_id = %s AND attempts = %s AND delivered_at IS NULL''',
-                             (delay, source, order_id, attempts))
+                             (delay, source, claimed_order_id, attempts))
                 failed += result.rowcount
     return {'delivered': delivered, 'failed': failed}
 
@@ -143,8 +152,9 @@ def deliver_pending(connect, webhook_url=None, post=requests.post, limit=20):
                             post, limit, synthetic=False)
 
 
-def deliver_synthetic_pending(connect, post=requests.post, limit=20):
-    """Explicitly send only synthetic notices to the separate test webhook."""
+def deliver_synthetic_pending(connect, order_id, post=requests.post):
+    """Attempt exactly one selected synthetic notice on the separate test webhook."""
+    _valid_synthetic_id(order_id)
     if os.environ.get('SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED') != 'true':
         raise ValueError('Synthetic notifications are disabled')
     test_webhook = os.environ.get('SLACK_TEST_ORDER_WEBHOOK_URL')
@@ -155,7 +165,7 @@ def deliver_synthetic_pending(connect, post=requests.post, limit=20):
                 (real_url.scheme, real_url.hostname, real_url.path)):
             raise ValueError('Test and real Slack webhooks must differ')
     return _deliver_pending(connect, test_webhook,
-                            post, limit, synthetic=True)
+                            post, 1, synthetic=True, order_id=order_id)
 
 
 def synthetic_pending_count(connect):
