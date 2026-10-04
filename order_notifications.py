@@ -118,9 +118,9 @@ def _deliver_pending(connect, webhook_url, post, limit, synthetic, order_id=None
         row = _claim(connect, synthetic=synthetic, order_id=order_id)
         if row is None:
             break
-        source, order_id, status, ordered_at, item_count, attempts = row
-        message = (f'[테스트·미운영] {order_id}' if synthetic else
-                   f'우리술 주문 접수 | {source} | 주문번호 {order_id} | '
+        source, claimed_order_id, status, ordered_at, item_count, attempts = row
+        message = (f'[테스트·미운영] {claimed_order_id}' if synthetic else
+                   f'우리술 주문 접수 | {source} | 주문번호 {claimed_order_id} | '
                    f'상태 {status} | 시각 {ordered_at} | 품목 수 {item_count}')
         success = False
         try:
@@ -133,7 +133,7 @@ def _deliver_pending(connect, webhook_url, post, limit, synthetic, order_id=None
             if success:
                 result = conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now(), lease_until = NULL
                     WHERE source = %s AND order_id = %s AND attempts = %s AND delivered_at IS NULL''',
-                                      (source, order_id, attempts))
+                                      (source, claimed_order_id, attempts))
                 delivered += result.rowcount
             else:
                 # Exponential retry, capped at one hour. Keep errors and webhook secrets out of DB.
@@ -141,7 +141,7 @@ def _deliver_pending(connect, webhook_url, post, limit, synthetic, order_id=None
                 result = conn.execute('''UPDATE ourisul_order_notice SET lease_until = NULL,
                     next_attempt_at = now() + (%s * interval '1 second')
                     WHERE source = %s AND order_id = %s AND attempts = %s AND delivered_at IS NULL''',
-                             (delay, source, order_id, attempts))
+                             (delay, source, claimed_order_id, attempts))
                 failed += result.rowcount
     return {'delivered': delivered, 'failed': failed}
 
