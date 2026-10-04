@@ -586,7 +586,8 @@ def main():
                             sender.assert_not_called()
                             with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
                                                          'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
-                                self.assertEqual(send_synthetic_orders.run(['--pending']), {'pending': 1})
+                                self.assertEqual(send_synthetic_orders.run(['--pending']),
+                                                 {'ready': 1, 'deferred': 0, 'leased': 0, 'total': 1})
                             failed = Mock(side_effect=requests.Timeout)
                             self.assertEqual(notices.deliver_synthetic_pending(cafe24.database, order_id, post=failed),
                                              {'delivered': 0, 'failed': 1})
@@ -612,7 +613,8 @@ def main():
                             self.assertEqual(sender.call_count, 1)
                             with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
                                                          'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
-                                self.assertEqual(send_synthetic_orders.run(['--pending']), {'pending': 0})
+                                self.assertEqual(send_synthetic_orders.run(['--pending']),
+                                                 {'ready': 0, 'deferred': 0, 'leased': 0, 'total': 0})
                             with cafe24.database() as conn:
                                 self.assertEqual(conn.execute('''SELECT attempts, delivered_at IS NOT NULL
                                     FROM ourisul_order_notice WHERE source='synthetic' ''').fetchone(), (2, True))
@@ -689,7 +691,8 @@ def main():
                                     send_synthetic_orders.run([])
                                 with self.assertRaises(SystemExit):
                                     send_synthetic_orders.run(['--limit', '20'])
-                            self.assertEqual(send_synthetic_orders.run(['--pending']), {'pending': 2})
+                            self.assertEqual(send_synthetic_orders.run(['--pending']),
+                                             {'ready': 2, 'deferred': 0, 'leased': 0, 'total': 2})
                             with self.assertRaisesRegex(ValueError, 'Invalid synthetic order ID'):
                                 send_synthetic_orders.run(['--send', older.upper()])
                         sender.assert_not_called()
@@ -740,6 +743,67 @@ def main():
                             ('synthetic', selected, 1, True),
                             ('synthetic', orphan, 0, False),
                         ]))
+
+                def test_synthetic_pending_classifies_without_claiming(self):
+                    ids = {name: 'TEST-' + secrets.token_hex(16) for name in
+                           ('ready', 'expired', 'deferred', 'leased', 'leased_deferred', 'delivered')}
+                    for order_id in ids.values():
+                        self.assertTrue(test_orders.record_test_order(order_id))
+                    self.assertEqual(notices.record_orders('cafe24', [{
+                        'order_id': 'VERIFY-REAL', 'status': 'N10',
+                        'ordered_at': '2026-09-29T00:00:00Z', 'item_count': 1,
+                    }], cafe24.database), 1)
+                    orphan = 'TEST-' + secrets.token_hex(16)
+                    with cafe24.database() as conn:
+                        for name in ('expired', 'deferred', 'leased', 'leased_deferred'):
+                            conn.execute('''UPDATE ourisul_order_notice SET
+                                next_attempt_at = now() + (%s * interval '1 minute'),
+                                lease_until = now() + (%s * interval '1 minute')
+                                WHERE source = 'synthetic' AND order_id = %s''',
+                                (1 if name in ('deferred', 'leased_deferred') else -1,
+                                 1 if name in ('leased', 'leased_deferred') else -1, ids[name]))
+                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now()
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['delivered'],))
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count)
+                            VALUES ('synthetic', %s, 'TEST_CREATED', '2026-09-29T00:00:00Z', 0),
+                                   ('synthetic', 'TEST-NOT-LOWERCASE-HEX', 'TEST_CREATED',
+                                    '2026-09-29T00:00:00Z', 0)''', (orphan,))
+                        before = conn.execute('''SELECT source, order_id, attempts, delivered_at,
+                            next_attempt_at, lease_until FROM ourisul_order_notice ORDER BY source, order_id''').fetchall()
+                    with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
+                                                 'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
+                        self.assertEqual(send_synthetic_orders.run(['--pending']),
+                                         {'ready': 2, 'deferred': 1, 'leased': 2, 'total': 5})
+                    with cafe24.database() as conn:
+                        after = conn.execute('''SELECT source, order_id, attempts, delivered_at,
+                            next_attempt_at, lease_until FROM ourisul_order_notice ORDER BY source, order_id''').fetchall()
+                    self.assertEqual(after, before)
+
+                    # now() is stable within this transaction: equality is leased,
+                    # while a retry exactly at now() is ready when its lease expired.
+                    with cafe24.database() as conn:
+                        conn.execute('''UPDATE ourisul_order_notice SET lease_until = now(),
+                            next_attempt_at = now() + interval '1 minute'
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['leased'],))
+                        conn.execute('''UPDATE ourisul_order_notice SET lease_until = now() - interval '1 second',
+                            next_attempt_at = now()
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['ready'],))
+
+                        @contextmanager
+                        def same_connection():
+                            yield conn
+
+                        self.assertEqual(notices.synthetic_pending_counts(same_connection),
+                                         {'ready': 2, 'deferred': 1, 'leased': 2, 'total': 5})
+
+                def test_synthetic_pending_requires_initialized_tables(self):
+                    connection = Mock()
+                    connection.__enter__ = Mock(return_value=connection)
+                    connection.__exit__ = Mock(return_value=False)
+                    connection.execute.side_effect = notices.UndefinedTable()
+                    with self.assertRaisesRegex(ValueError, 'not initialized'):
+                        notices.synthetic_pending_counts(lambda: connection)
 
                 def test_synthetic_sender_cli_rejects_missing_or_unsafe_database(self):
                     with patch.dict(os.environ, {'VERIFY_DATABASE_URL': ''}):

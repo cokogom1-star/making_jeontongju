@@ -168,14 +168,22 @@ def deliver_synthetic_pending(connect, order_id, post=requests.post):
                             post, 1, synthetic=True, order_id=order_id)
 
 
-def synthetic_pending_count(connect):
-    """Count eligible synthetic notices without claiming or delivering them."""
+def synthetic_pending_counts(connect):
+    """Classify undelivered synthetic notices without claiming or delivering them."""
     try:
         with connect() as conn:
-            return conn.execute('''SELECT count(*) FROM ourisul_order_notice n
+            ready, deferred, leased, total = conn.execute('''SELECT
+                count(*) FILTER (WHERE (n.lease_until IS NULL OR n.lease_until < now())
+                    AND n.next_attempt_at <= now()),
+                count(*) FILTER (WHERE (n.lease_until IS NULL OR n.lease_until < now())
+                    AND n.next_attempt_at > now()),
+                count(*) FILTER (WHERE n.lease_until >= now()),
+                count(*)
+                FROM ourisul_order_notice n
                 WHERE n.source = 'synthetic' AND n.order_id ~ '^TEST-[0-9a-f]{32}$'
                   AND EXISTS (SELECT 1 FROM ourisul_test_orders t WHERE t.order_id = n.order_id)
-                  AND n.delivered_at IS NULL''').fetchone()[0]
+                  AND n.delivered_at IS NULL''').fetchone()
+            return {'ready': ready, 'deferred': deferred, 'leased': leased, 'total': total}
     except UndefinedTable as exc:
         raise ValueError('Synthetic order tables are not initialized') from exc
 

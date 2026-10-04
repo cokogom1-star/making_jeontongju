@@ -9,9 +9,12 @@ It does not create a payment, real order, customer record, or shipment.
 
 The regular Slack worker deliberately claims only Cafe24 and Coupang notices.
 Synthetic notices remain queued until `send_synthetic_orders.py` is run against
-an explicit disposable `VERIFY_DATABASE_URL`. `--pending` counts queued test
-notices without sending. Running without an action does not send; delivery
-requires `--send TEST-<32 lowercase hex digits>` and attempts only that one
+an explicit disposable `VERIFY_DATABASE_URL`. `--pending` reports read-only
+`ready`, `deferred` (retry time is in the future), `leased` (active lease),
+and `total` counts for undelivered, backed test notices without sending.
+An active lease takes precedence over a future retry time. Running without an
+action does not send; delivery requires `--send TEST-<32 lowercase hex digits>`
+and attempts only that one
 exact synthetic ID, never another queued notice. Missing, already delivered,
 leased, or not-yet-retryable IDs result in zero sends. Delivery also requires
 `SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED=true` and
