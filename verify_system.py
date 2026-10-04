@@ -359,6 +359,80 @@ def main():
                         self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_order_notice
                             WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()[0], 1)
 
+                def test_synthetic_tracking_html_admin_flow_is_read_only(self):
+                    form_path = '/admin/orders/test?view=html'
+                    self.assertEqual(self.client.get(form_path).status_code, 401)
+                    self.assertEqual(self.client.get('/admin/orders/test/lookup').status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(form_path).status_code, 404)
+                        self.assertEqual(self.get('/admin/orders/test/lookup').status_code, 404)
+                    form = self.get(form_path)
+                    self.assertEqual(form.status_code, 200)
+                    self.assertIn('합성 주문 배송 조회', form.get_data(as_text=True))
+                    self.assertIn('name="viewport"', form.get_data(as_text=True))
+                    self.assertIn('max-width:720px', form.get_data(as_text=True))
+                    with self.client.session_transaction() as sess:
+                        csrf, order_id = sess['test_order_csrf'], sess['test_order_id']
+                    self.assertEqual(self.post(form_path, data={'csrf': 'bad'}).status_code, 403)
+                    created = self.post(form_path, data={'csrf': csrf})
+                    self.assertEqual(created.status_code, 303)
+                    self.assertEqual(created.headers['Location'],
+                                     f'/admin/orders/test/{order_id}/history?view=html')
+                    path = created.headers['Location']
+                    with cafe24.database() as conn:
+                        before = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
+                                       for table in ('ourisul_test_orders', 'ourisul_test_order_state',
+                                                     'ourisul_test_order_event', 'ourisul_order_notice'))
+                    page = self.get(path)
+                    self.assertEqual(page.status_code, 200)
+                    self.assertIn(order_id, page.get_data(as_text=True))
+                    self.assertIn('TEST_CREATED', page.get_data(as_text=True))
+                    self.assertIn('name="viewport"', page.get_data(as_text=True))
+                    self.assertIn('noindex,nofollow', page.get_data(as_text=True))
+                    self.assertEqual(page.headers['Cache-Control'], 'no-store')
+                    self.assertEqual(page.headers['Referrer-Policy'], 'no-referrer')
+                    lookup = self.get('/admin/orders/test/lookup', query_string={'order_id': order_id})
+                    self.assertEqual(lookup.status_code, 303)
+                    self.assertEqual(lookup.headers['Location'], path)
+                    self.assertEqual(self.get(f'/admin/orders/test/{order_id}/history').json['status'],
+                                     'TEST_CREATED')
+                    with cafe24.database() as conn:
+                        after = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
+                                      for table in ('ourisul_test_orders', 'ourisul_test_order_state',
+                                                    'ourisul_test_order_event', 'ourisul_order_notice'))
+                    self.assertEqual(after, before)
+                    self.assertEqual(self.post(f'/admin/orders/test/{order_id}/history', data={
+                        'csrf': csrf, 'status': 'TEST_PREPARED', 'expected_version': '0',
+                        'request_key': 'tracking-timeline'}).status_code, 200)
+                    timeline = self.get(path).get_data(as_text=True)
+                    self.assertLess(timeline.index('<li>TEST_CREATED<small>'),
+                                    timeline.index('<li>TEST_PREPARED<small>'))
+                    self.assertIn('현재 상태: <strong>TEST_PREPARED</strong>', timeline)
+                    self.assertEqual(self.get('/admin/orders/test/lookup',
+                                              query_string={'order_id': 'invalid'}).status_code, 404)
+                    self.assertEqual(self.get('/admin/orders/test/lookup').status_code, 404)
+                    self.assertEqual(self.get('/admin/orders/test/' + 'TEST-' + '0' * 32 +
+                                              '/history?view=html').status_code, 404)
+                    legacy_id = 'TEST-' + secrets.token_hex(16)
+                    with cafe24.database() as conn:
+                        conn.execute("INSERT INTO ourisul_test_orders (order_id, status, item_count) "
+                                     "VALUES (%s, 'TEST_CREATED', 0)", (legacy_id,))
+                    self.assertEqual(self.get(f'/admin/orders/test/{legacy_id}/history?view=html').status_code,
+                                     404)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_state '
+                                                      'WHERE order_id=%s', (legacy_id,)).fetchone()[0], 0)
+                    with patch.object(fulfillment, 'history', return_value={
+                            'order_id': order_id, 'status': '<script>alert(1)</script>',
+                            'version': 0, 'events': [{'version': 0, 'from_status': None,
+                                                       'to_status': '<b>unsafe</b>',
+                                                       'created_at': '<img src=x>'}]}):
+                        escaped = self.get(path).get_data(as_text=True)
+                    self.assertNotIn('<script>', escaped)
+                    self.assertNotIn('<b>unsafe</b>', escaped)
+                    self.assertNotIn('<img src=x>', escaped)
+                    self.assertIn('&lt;b&gt;unsafe&lt;/b&gt;', escaped)
+
                 def test_synthetic_fulfillment_rejects_unknown_and_bad_input_without_writes(self):
                     self.assertEqual(self.get('/admin/orders/test').status_code, 200)
                     with self.client.session_transaction() as sess:
