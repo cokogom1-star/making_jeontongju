@@ -22,6 +22,26 @@ live delivery check. No external Slack message was sent. The verifier exercises
 the sender with a fake Slack response and an isolated PostgreSQL schema; it
 does not establish real Slack connectivity or channel routing.
 
+## Synthetic order status and delivery rehearsal
+
+New synthetic orders also create `ourisul_test_order_state` and an initial
+`ourisul_test_order_event` in the same transaction as the test order and notice.
+An administrator can read `GET /admin/orders/test/<TEST-ID>/history` without
+changing the database. `POST` to the same route requires the existing admin
+authentication, enabled test-order gate, CSRF token from `/admin/orders/test`,
+`status`, `expected_version`, and a unique `request_key` form field. The only
+allowed sequence is `TEST_CREATED` → `TEST_PREPARED` → `TEST_SHIPPED` →
+`TEST_DELIVERED`. A row lock, expected version, and request key prevent two
+concurrent requests from both advancing the same version; a retry of the same
+key returns the prior event without adding another. This records simulated
+delivery progress only. It does not create a real shipment or contact a carrier.
+
+Orders written before this status model have no state row, so a read-only GET
+returns 404 until the first authorized transition initializes their initial
+state/event in its transaction. No automatic production backfill is performed.
+The verifier covers the transition path and concurrent version conflict with
+isolated PostgreSQL; actual carrier integration is untested and disabled.
+
 ## Remaining product work
 
 - Design each menu page beyond the current public landing/catalog pages.

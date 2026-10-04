@@ -10,6 +10,9 @@ import io
 import json
 import os
 import platform
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from threading import Barrier
 from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
 import secrets
@@ -78,6 +81,7 @@ def main():
             import direct_checkout
             import order_notifications as notices
             import send_synthetic_orders
+            import synthetic_order_history as fulfillment
             import test_orders
             from app import app
             app.config.update(TESTING=True)
@@ -100,7 +104,9 @@ def main():
                         direct_checkout.schema(conn)
                         notices.schema(conn)
                         test_orders.schema(conn)
+                        fulfillment.schema(conn)
                         conn.execute('TRUNCATE ourisul_cafe24_token, ourisul_test_payments, '
+                                     'ourisul_test_order_event, ourisul_test_order_state, '
                                      'ourisul_test_orders, ourisul_order_notice')
                         cafe24.save_token(conn, {'access_token': 'synthetic-access',
                                                'refresh_token': 'synthetic-refresh'})
@@ -278,6 +284,11 @@ def main():
                                                       'attempts, delivered_at FROM ourisul_order_notice').fetchall(),
                                          [('synthetic', expected_id, 'TEST_CREATED', 0, 0, None)])
                         self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_payments').fetchone()[0], 0)
+                        self.assertEqual(conn.execute('''SELECT status, version FROM ourisul_test_order_state
+                            WHERE order_id=%s''', (expected_id,)).fetchone(), ('TEST_CREATED', 0))
+                        self.assertEqual(conn.execute('''SELECT version, from_status, to_status FROM
+                            ourisul_test_order_event WHERE order_id=%s''', (expected_id,)).fetchall(),
+                            [(0, None, 'TEST_CREATED')])
                     sender = Mock(return_value=response())
                     webhook = 'https://hooks.slack.com/services/TEST/TEST/TEST'
                     self.assertEqual(notices.deliver_pending(cafe24.database, webhook, post=sender),
@@ -297,9 +308,130 @@ def main():
                                                           'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
                             self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_order_notice '
                                                           'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
+                            self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_state '
+                                                          'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
+                            self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event '
+                                                          'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
                     finally:
                         with cafe24.database() as conn:
                             conn.execute('ALTER TABLE ourisul_order_notice DROP CONSTRAINT no_synthetic')
+
+                def test_synthetic_fulfillment_auth_gate_history_and_idempotency(self):
+                    self.assertEqual(self.get('/admin/orders/test').status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        order_id, csrf = sess['test_order_id'], sess['test_order_csrf']
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    path = f'/admin/orders/test/{order_id}/history'
+                    self.assertEqual(self.client.get(path).status_code, 401)
+                    self.assertEqual(self.client.post(path, data={}).status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(path).status_code, 404)
+                        self.assertEqual(self.post(path, data={'csrf': csrf}).status_code, 404)
+                    self.assertEqual(self.post(path, data={'csrf': 'bad'}).status_code, 403)
+                    original = self.get(path)
+                    self.assertEqual(original.status_code, 200)
+                    self.assertEqual(original.json['status'], 'TEST_CREATED')
+                    self.assertEqual(len(original.json['events']), 1)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 1)
+                    data = {'csrf': csrf, 'status': 'TEST_PREPARED',
+                            'expected_version': '0', 'request_key': 'prepare-once'}
+                    self.assertEqual(self.post(path, data=data).json,
+                                     {'status': 'TEST_PREPARED', 'version': 1, 'created': True})
+                    self.assertEqual(self.post(path, data=data).json,
+                                     {'status': 'TEST_PREPARED', 'version': 1, 'created': False})
+                    self.assertEqual(self.post(path, data=dict(data, status='TEST_SHIPPED')).status_code, 409)
+                    self.assertEqual(self.post(path, data=dict(data, request_key='stale')).status_code, 409)
+                    self.assertEqual(self.post(path, data=dict(data, status='TEST_DELIVERED',
+                                                               expected_version='1', request_key='skip')).status_code, 409)
+                    self.assertEqual(self.post(path, data=dict(data, status='TEST_SHIPPED',
+                                                               expected_version='1', request_key='ship-once')).status_code, 200)
+                    self.assertEqual(self.post(path, data=dict(data, status='TEST_DELIVERED',
+                                                               expected_version='2', request_key='deliver-once')).status_code, 200)
+                    self.assertEqual(self.post(path, data=data).json,
+                                     {'status': 'TEST_PREPARED', 'version': 1, 'created': False})
+                    final = self.get(path).json
+                    self.assertEqual((final['status'], final['version']), ('TEST_DELIVERED', 3))
+                    self.assertEqual([event['to_status'] for event in final['events']],
+                                     ['TEST_CREATED', 'TEST_PREPARED', 'TEST_SHIPPED', 'TEST_DELIVERED'])
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 4)
+                        self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_order_notice
+                            WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()[0], 1)
+
+                def test_synthetic_fulfillment_rejects_unknown_and_bad_input_without_writes(self):
+                    self.assertEqual(self.get('/admin/orders/test').status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    path = f'/admin/orders/test/{order_id}/history'
+                    self.assertEqual(self.get(path).status_code, 404)
+                    self.assertEqual(self.post(path, data={'csrf': csrf, 'status': 'TEST_PREPARED',
+                                                           'expected_version': '0', 'request_key': 'missing'}).status_code, 404)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    for bad in ({'status': 'TEST_DELIVERED', 'expected_version': '0', 'request_key': 'skip'},
+                                {'status': 'TEST_PREPARED', 'expected_version': '-1', 'request_key': 'bad-version'},
+                                {'status': 'TEST_PREPARED', 'expected_version': '0', 'request_key': 'bad key'},
+                                {'status': 'TEST_PREPARED', 'expected_version': 'garbage', 'request_key': 'bad-int'}):
+                        self.assertIn(self.post(path, data={'csrf': csrf, **bad}).status_code, (400, 409))
+                    self.assertEqual(fulfillment.history(order_id)['version'], 0)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 1)
+                        conn.execute('DROP TABLE ourisul_test_order_event, ourisul_test_order_state')
+                    self.assertEqual(self.get(path).status_code, 404)
+
+                def test_synthetic_fulfillment_history_uses_one_snapshot(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    reads = []
+
+                    @contextmanager
+                    def interleaved_read():
+                        with cafe24.database() as conn:
+                            class ReadConnection:
+                                def execute(self, query, params=None):
+                                    cursor = conn.execute(query, params)
+                                    reads.append(query)
+                                    if len(reads) == 1:
+                                        # Commit after the reader's first SELECT has captured
+                                        # its snapshot, before it consumes the cursor.
+                                        fulfillment.transition(order_id, 'TEST_PREPARED', 0,
+                                                               'during-history')
+                                    return cursor
+
+                            yield ReadConnection()
+
+                    snapshot = fulfillment.history(order_id, connect=interleaved_read)
+                    self.assertEqual(len(reads), 1)
+                    self.assertEqual((snapshot['status'], snapshot['version']),
+                                     ('TEST_CREATED', 0))
+                    self.assertEqual([(event['version'], event['to_status'])
+                                      for event in snapshot['events']],
+                                     [(0, 'TEST_CREATED')])
+                    latest = fulfillment.history(order_id)
+                    self.assertEqual((latest['status'], latest['version']),
+                                     ('TEST_PREPARED', 1))
+                    self.assertEqual([event['version'] for event in latest['events']], [0, 1])
+
+                def test_synthetic_fulfillment_concurrent_version_conflict(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    start = Barrier(2)
+
+                    def advance(key):
+                        start.wait(timeout=10)
+                        try:
+                            return fulfillment.transition(order_id, 'TEST_PREPARED', 0, key)
+                        except ValueError as exc:
+                            return str(exc)
+
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        results = list(pool.map(advance, ('prepare-a', 'prepare-b')))
+                    self.assertEqual(sum(isinstance(item, dict) for item in results), 1)
+                    self.assertIn('Stale synthetic order version', results)
+                    self.assertEqual(fulfillment.history(order_id)['version'], 1)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 2)
 
                 def test_synthetic_sender_gate_source_isolation_retry_and_idempotency(self):
                     order_id = 'TEST-' + secrets.token_hex(16)
@@ -378,7 +510,8 @@ def main():
                         for old_post_succeeds in (True, False):
                             with self.subTest(old_post_succeeds=old_post_succeeds):
                                 with cafe24.database() as conn:
-                                    conn.execute('TRUNCATE ourisul_test_orders, ourisul_order_notice')
+                                    conn.execute('TRUNCATE ourisul_test_order_event, ourisul_test_order_state, '
+                                                 'ourisul_test_orders, ourisul_order_notice')
                                 order_id = 'TEST-' + secrets.token_hex(16)
                                 self.assertTrue(test_orders.record_test_order(order_id))
 
