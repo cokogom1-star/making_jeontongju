@@ -103,18 +103,19 @@ def history(order_id, connect=database):
     _valid_order_id(order_id)
     try:
         with connect() as conn:
-            current = conn.execute('''SELECT status, version FROM ourisul_test_order_state
-                WHERE order_id = %s''', (order_id,)).fetchone()
-            if current is None:
+            rows = conn.execute('''SELECT s.status, s.version,
+                       e.version, e.from_status, e.to_status, e.created_at
+                FROM ourisul_test_order_state AS s
+                LEFT JOIN ourisul_test_order_event AS e ON e.order_id = s.order_id
+                WHERE s.order_id = %s ORDER BY e.version''', (order_id,)).fetchall()
+            if not rows:
                 return None
-            events = conn.execute('''SELECT version, from_status, to_status, created_at
-                FROM ourisul_test_order_event WHERE order_id = %s ORDER BY version''',
-                (order_id,)).fetchall()
     except UndefinedTable:
         # A new deployment may receive a read before any synthetic order has
         # initialized the tables. Reads must not run DDL or create records.
         return None
-    return {'order_id': order_id, 'status': current[0], 'version': current[1],
+    return {'order_id': order_id, 'status': rows[0][0], 'version': rows[0][1],
             'events': [{'version': version, 'from_status': before,
                         'to_status': after, 'created_at': created_at.isoformat()}
-                       for version, before, after, created_at in events]}
+                       for _, _, version, before, after, created_at in rows
+                       if version is not None]}
