@@ -33,13 +33,16 @@ def _verify_database():
 
 def run(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--pending', action='store_true', help='count queued synthetic notices only')
-    parser.add_argument('--limit', type=int, default=20, help='maximum sends (0-100)')
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument('--pending', action='store_true', help='count queued synthetic notices only')
+    action.add_argument('--send', metavar='TEST-ID', help='attempt one exact synthetic notice')
     args = parser.parse_args(argv)
+    if args.send is not None:
+        notices._valid_synthetic_id(args.send)
     connect = _verify_database()
     if args.pending:
         return {'pending': notices.synthetic_pending_count(connect)}
-    return notices.deliver_synthetic_pending(connect, limit=args.limit)
+    return notices.deliver_synthetic_pending(connect, args.send)
 
 
 if __name__ == '__main__':
