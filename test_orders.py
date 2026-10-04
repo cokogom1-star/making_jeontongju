@@ -13,6 +13,7 @@ from flask import Blueprint, abort, render_template_string, request, session
 
 from cafe24 import database, protected
 import order_notifications as notices
+import synthetic_order_history as fulfillment
 
 
 bp = Blueprint('test_orders', __name__)
@@ -40,11 +41,13 @@ def record_test_order(order_id, connect=database):
         notices.schema(conn)
         result = conn.execute('''INSERT INTO ourisul_test_orders (order_id, status, item_count)
             VALUES (%s, 'TEST_CREATED', 0) ON CONFLICT (order_id) DO NOTHING''', (order_id,))
-        conn.execute('''INSERT INTO ourisul_order_notice
-            (source, order_id, status, ordered_at, item_count)
-            VALUES (%s, %s, 'TEST_CREATED', to_char(now() AT TIME ZONE 'UTC',
-                    'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 0)
-            ON CONFLICT (source, order_id) DO NOTHING''', (SOURCE, order_id))
+        if result.rowcount:
+            conn.execute('''INSERT INTO ourisul_order_notice
+                (source, order_id, status, ordered_at, item_count)
+                VALUES (%s, %s, 'TEST_CREATED', to_char(now() AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 0)
+                ON CONFLICT (source, order_id) DO NOTHING''', (SOURCE, order_id))
+        fulfillment.initialize(conn, order_id)
         return result.rowcount == 1
 
 
@@ -80,3 +83,32 @@ Slack 알림은 대기열에 기록되며, 별도 설정된 테스트 발송기�
         abort(403)
     created = record_test_order(order_id)
     return {'order_id': order_id, 'created': created, 'notice': 'queued_for_test_sender'}
+
+
+@bp.route('/admin/orders/test/<order_id>/history', methods=['GET', 'POST'])
+@protected
+def test_order_history(order_id):
+    """Read or advance a simulated delivery status; no carrier is contacted."""
+    if request.method == 'GET':
+        try:
+            result = fulfillment.history(order_id)
+        except ValueError:
+            abort(404)
+        if result is None:
+            abort(404)
+        return result
+    token = session.get('test_order_csrf', '')
+    if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
+        abort(403)
+    try:
+        expected_version = int(request.form.get('expected_version', ''))
+        result = fulfillment.transition(order_id, request.form.get('status'),
+                                        expected_version, request.form.get('request_key'))
+    except (ValueError, TypeError) as exc:
+        if str(exc) == 'Synthetic order not found':
+            abort(404)
+        if str(exc) in ('Stale synthetic order version', 'Invalid synthetic status transition',
+                        'Request key reused for another status'):
+            abort(409)
+        abort(400)
+    return result
