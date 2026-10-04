@@ -75,26 +75,28 @@ def save_token(conn, token):
                  (os.environ['CAFE24_MALL_ID'], encoded))
 
 
-def public_catalog(product_no=None):
+def public_catalog(product_no=None, page=1, with_next=False):
     """Only expose products that Cafe24 marks as visible to shoppers."""
     if product_no is not None and (type(product_no) is not int or product_no <= 0):
         return []
+    if type(page) is not int or not 1 <= page <= 209 or (product_no is not None and page != 1):
+        raise ValueError('Invalid catalog page')
     if not config_ok():
-        return None
+        return (None, False) if with_next else None
     with database() as conn:
         schema(conn)
         row = conn.execute('SELECT encrypted_token FROM ourisul_cafe24_token '
                            'WHERE mall_id = %s FOR UPDATE', (os.environ['CAFE24_MALL_ID'],)).fetchone()
         if not row:
-            return None
+            return (None, False) if with_next else None
         token = json.loads(Fernet(os.environ['TOKEN_ENCRYPTION_KEY']).decrypt(row[0].encode()))
         path = '/admin/products' + (('/' + str(product_no)) if product_no else '')
-        params = None if product_no else {'limit': 24, 'display': 'T'}
-
         def fetch():
             return requests.get(api_base() + path,
                                 headers={'Authorization': 'Bearer ' + token['access_token']},
-                                params=params, timeout=(5, 20))
+                                params=None if product_no else {'limit': 25 if with_next else 24,
+                                                                  'offset': (page - 1) * 24, 'display': 'T'},
+                                timeout=(5, 20))
 
         response = fetch()
         if response.status_code == 401:
@@ -106,8 +108,15 @@ def public_catalog(product_no=None):
             return []
         response.raise_for_status()
         data = response.json()
-        raw = [data.get('product')] if product_no else data.get('products', [])
-        return [p for p in raw if isinstance(p, dict) and p.get('display') == 'T']
+        if not isinstance(data, dict):
+            raise ValueError('Invalid Cafe24 catalog response')
+        raw = [data.get('product')] if product_no else data.get('products')
+        if not isinstance(raw, list) or len(raw) > (25 if with_next else 24):
+            raise ValueError('Invalid Cafe24 catalog page')
+        visible = [p for p in raw[:24] if isinstance(p, dict) and p.get('display') == 'T']
+        if with_next:
+            return visible, (None if page == 209 and len(raw) > 24 else len(raw) > 24)
+        return visible
 
 
 def order_summaries(start_date, end_date, limit=100):

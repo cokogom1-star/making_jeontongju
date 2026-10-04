@@ -159,6 +159,53 @@ def main():
                         self.assertIn('상품 준비 중입니다.', self.get('/products').get_data(as_text=True))
                         fetch.assert_not_called()
 
+                def test_catalog_paginates_visible_products(self):
+                    first = [{'product_no': number, 'display': 'T',
+                              'product_name': f'Synthetic {number}', 'price': '1000'}
+                             for number in range(1, 25)]
+                    first[0].update(display='F', product_name='Hidden first product')
+                    last = {'product_no': 25, 'display': 'T',
+                            'product_name': 'Last visible product', 'price': '1000'}
+                    pages = [response({'products': first + [last]}), response({'products': [last]})]
+                    with patch.object(cafe24.requests, 'get', side_effect=pages) as fetch:
+                        page = self.get('/products')
+                        second = self.get('/products?page=2')
+                    self.assertEqual(page.status_code, 200)
+                    self.assertIn('다음 상품', page.get_data(as_text=True))
+                    self.assertNotIn('Last visible product', page.get_data(as_text=True))
+                    self.assertNotIn('Hidden first product', page.get_data(as_text=True))
+                    self.assertIn('Last visible product', second.get_data(as_text=True))
+                    self.assertIn('이전 상품', second.get_data(as_text=True))
+                    self.assertNotIn('다음 상품', second.get_data(as_text=True))
+                    self.assertEqual([call.kwargs['params']['offset'] for call in fetch.call_args_list], [0, 24])
+                    self.assertTrue(all(call.kwargs['params']['display'] == 'T'
+                                        for call in fetch.call_args_list))
+                    self.assertEqual(self.get('/products?page=210').status_code, 404)
+                    self.assertEqual(self.get('/products?page=garbage').status_code, 404)
+
+                def test_catalog_second_page_refresh_and_malformed_page(self):
+                    first = [{'product_no': number, 'display': 'T'} for number in range(1, 26)]
+                    refreshed = {'access_token': 'refreshed-access', 'refresh_token': 'refreshed-refresh',
+                                 'mall_id': env['CAFE24_MALL_ID']}
+                    with patch.object(cafe24.requests, 'get', side_effect=[
+                            response(status=401), response({'products': first})]) as fetch, patch.object(
+                            cafe24.requests, 'post', return_value=response(refreshed)):
+                        catalog, has_next = cafe24.public_catalog(with_next=True)
+                        self.assertEqual(len(catalog), 24)
+                        self.assertTrue(has_next)
+                        self.assertEqual([call.kwargs['params']['offset'] for call in fetch.call_args_list],
+                                         [0, 0])
+                        self.assertEqual(fetch.call_args.kwargs['headers']['Authorization'],
+                                         'Bearer refreshed-access')
+                    with patch.object(cafe24.requests, 'get', return_value=response({'products': first})):
+                        self.assertIsNone(cafe24.public_catalog(page=209, with_next=True)[1])
+                        capped = self.get('/products?page=209').get_data(as_text=True)
+                        self.assertIn('표시 한도에 도달했습니다.', capped)
+                        self.assertNotIn('다음 상품', capped)
+                    with patch.object(cafe24.requests, 'get', return_value=response({'products': None})):
+                        self.assertIn('상품 정보를 불러오지 못했습니다.',
+                                      self.get('/products').get_data(as_text=True))
+
                 def test_catalog_provider_failure_has_safe_recovery_page(self):
                     # Public list preserves navigation; detail distinguishes an outage from 404.
                     failure = requests.Timeout('synthetic-private-diagnostic')
