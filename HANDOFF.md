@@ -13,7 +13,12 @@ an explicit disposable `VERIFY_DATABASE_URL`. `--pending` reports read-only
 `ready`, `deferred` (retry time is in the future), `leased` (active lease),
 and `total` counts for undelivered, backed test notices without sending.
 An active lease takes precedence over a future retry time. Running without an
-action does not send; delivery requires `--send TEST-<32 lowercase hex digits>`
+action does not send. `--inspect TEST-<32 lowercase hex digits>` reads only
+that backed notice and reports `ready`, `deferred` (with retry time), `leased`
+(with lease expiry), `delivered` (with delivery time), or `missing`. A missing
+record and an unbacked notice are both reported as `missing`; no claim,
+schema creation, or Slack request occurs. This exact-ID inspection is separate
+from the aggregate `--pending` counts. Delivery requires `--send TEST-<32 lowercase hex digits>`
 and attempts only that one
 exact synthetic ID, never another queued notice. Missing, already delivered,
 leased, or not-yet-retryable IDs result in zero sends. Delivery also requires
