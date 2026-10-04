@@ -805,6 +805,86 @@ def main():
                     with self.assertRaisesRegex(ValueError, 'not initialized'):
                         notices.synthetic_pending_counts(lambda: connection)
 
+                def test_synthetic_exact_inspection_is_read_only(self):
+                    ids = {name: 'TEST-' + secrets.token_hex(16) for name in
+                           ('ready', 'deferred', 'leased', 'both', 'delivered')}
+                    for order_id in ids.values():
+                        self.assertTrue(test_orders.record_test_order(order_id))
+                    orphan = 'TEST-' + secrets.token_hex(16)
+                    missing = 'TEST-' + secrets.token_hex(16)
+                    with cafe24.database() as conn:
+                        conn.execute('''UPDATE ourisul_order_notice SET
+                            next_attempt_at = now() + interval '5 minutes'
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['deferred'],))
+                        conn.execute('''UPDATE ourisul_order_notice SET
+                            lease_until = now() + interval '5 minutes'
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['leased'],))
+                        conn.execute('''UPDATE ourisul_order_notice SET
+                            next_attempt_at = now() + interval '5 minutes',
+                            lease_until = now() + interval '5 minutes'
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['both'],))
+                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now()
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['delivered'],))
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count)
+                            VALUES ('synthetic', %s, 'TEST_CREATED', '2026-09-29T00:00:00Z', 0),
+                                   ('cafe24', %s, 'N10', '2026-09-29T00:00:00Z', 1)''',
+                            (orphan, missing))
+                        before = conn.execute('''SELECT source, order_id, attempts, delivered_at,
+                            next_attempt_at, lease_until FROM ourisul_order_notice
+                            ORDER BY source, order_id''').fetchall()
+                        before_states = conn.execute('''SELECT *
+                            FROM ourisul_test_order_state ORDER BY order_id''').fetchall()
+                        before_events = conn.execute('''SELECT *
+                            FROM ourisul_test_order_event ORDER BY order_id, version''').fetchall()
+                    with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
+                                                 'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
+                        for name in ('ready', 'deferred', 'leased', 'both', 'delivered'):
+                            result = send_synthetic_orders.run(['--inspect', ids[name]])
+                            self.assertEqual(result['order_id'], ids[name])
+                            self.assertEqual(result['attempts'], 0)
+                            self.assertEqual(result['state'], 'leased' if name == 'both' else name)
+                            if name == 'deferred':
+                                self.assertIn('retry_at', result)
+                            if name in ('leased', 'both'):
+                                self.assertIn('lease_until', result)
+                            if name == 'delivered':
+                                self.assertIn('delivered_at', result)
+                        for order_id in (missing, orphan):
+                            self.assertEqual(send_synthetic_orders.run(['--inspect', order_id]),
+                                             {'order_id': order_id, 'state': 'missing'})
+                        with self.assertRaisesRegex(ValueError, 'Invalid synthetic order ID'):
+                            send_synthetic_orders.run(['--inspect', missing.upper()])
+                        with self.assertRaisesRegex(ValueError, 'Invalid synthetic order ID'):
+                            send_synthetic_orders.run(['--inspect', ''])
+                        for actions in (['--pending', '--inspect', ids['ready']],
+                                        ['--pending', '--send', ids['ready']],
+                                        ['--inspect', ids['ready'], '--send', ids['ready']]):
+                            with patch('sys.stderr', new_callable=io.StringIO):
+                                with self.assertRaises(SystemExit) as rejected:
+                                    send_synthetic_orders.run(actions)
+                            self.assertEqual(rejected.exception.code, 2)
+                    with cafe24.database() as conn:
+                        after = conn.execute('''SELECT source, order_id, attempts, delivered_at,
+                            next_attempt_at, lease_until FROM ourisul_order_notice
+                            ORDER BY source, order_id''').fetchall()
+                        after_states = conn.execute('''SELECT *
+                            FROM ourisul_test_order_state ORDER BY order_id''').fetchall()
+                        after_events = conn.execute('''SELECT *
+                            FROM ourisul_test_order_event ORDER BY order_id, version''').fetchall()
+                    self.assertEqual(after, before)
+                    self.assertEqual(after_states, before_states)
+                    self.assertEqual(after_events, before_events)
+
+                def test_synthetic_inspection_requires_initialized_tables(self):
+                    connection = Mock()
+                    connection.__enter__ = Mock(return_value=connection)
+                    connection.__exit__ = Mock(return_value=False)
+                    connection.execute.side_effect = notices.UndefinedTable()
+                    with self.assertRaisesRegex(ValueError, 'not initialized'):
+                        notices.synthetic_notice_status(
+                            lambda: connection, 'TEST-' + secrets.token_hex(16))
+
                 def test_synthetic_sender_cli_rejects_missing_or_unsafe_database(self):
                     with patch.dict(os.environ, {'VERIFY_DATABASE_URL': ''}):
                         with self.assertRaisesRegex(ValueError, 'VERIFY_DATABASE_URL is required'):
