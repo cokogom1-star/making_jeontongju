@@ -11,6 +11,7 @@ import json
 import os
 import platform
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from threading import Barrier
 from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
@@ -378,6 +379,39 @@ def main():
                         self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 1)
                         conn.execute('DROP TABLE ourisul_test_order_event, ourisul_test_order_state')
                     self.assertEqual(self.get(path).status_code, 404)
+
+                def test_synthetic_fulfillment_history_uses_one_snapshot(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    reads = []
+
+                    @contextmanager
+                    def interleaved_read():
+                        with cafe24.database() as conn:
+                            class ReadConnection:
+                                def execute(self, query, params=None):
+                                    cursor = conn.execute(query, params)
+                                    reads.append(query)
+                                    if len(reads) == 1:
+                                        # Commit after the reader's first SELECT has captured
+                                        # its snapshot, before it consumes the cursor.
+                                        fulfillment.transition(order_id, 'TEST_PREPARED', 0,
+                                                               'during-history')
+                                    return cursor
+
+                            yield ReadConnection()
+
+                    snapshot = fulfillment.history(order_id, connect=interleaved_read)
+                    self.assertEqual(len(reads), 1)
+                    self.assertEqual((snapshot['status'], snapshot['version']),
+                                     ('TEST_CREATED', 0))
+                    self.assertEqual([(event['version'], event['to_status'])
+                                      for event in snapshot['events']],
+                                     [(0, 'TEST_CREATED')])
+                    latest = fulfillment.history(order_id)
+                    self.assertEqual((latest['status'], latest['version']),
+                                     ('TEST_PREPARED', 1))
+                    self.assertEqual([event['version'] for event in latest['events']], [0, 1])
 
                 def test_synthetic_fulfillment_concurrent_version_conflict(self):
                     order_id = 'TEST-' + secrets.token_hex(16)
