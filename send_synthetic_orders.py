@@ -35,13 +35,17 @@ def run(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--pending', action='store_true', help='show ready, deferred and leased synthetic notices')
+    action.add_argument('--inspect', metavar='TEST-ID', help='read the state of one exact synthetic notice')
     action.add_argument('--send', metavar='TEST-ID', help='attempt one exact synthetic notice')
     args = parser.parse_args(argv)
-    if args.send is not None:
-        notices._valid_synthetic_id(args.send)
+    selected_id = args.send if args.send is not None else args.inspect
+    if selected_id is not None:
+        notices._valid_synthetic_id(selected_id)
     connect = _verify_database()
     if args.pending:
         return notices.synthetic_pending_counts(connect)
+    if args.inspect is not None:
+        return notices.synthetic_notice_status(connect, args.inspect)
     return notices.deliver_synthetic_pending(connect, args.send)
 
 
