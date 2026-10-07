@@ -78,11 +78,16 @@ The verifier uploads `verification-result.json` with
 [Node 20 deprecation notice](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/)
 and the [v6 release](https://github.com/actions/upload-artifact/releases/tag/v6.0.0)
 identify v6 as a Node 24 action requiring Actions Runner 2.327.1 or newer.
-The previous main run used GitHub-hosted runner 2.337.0, but the change is
-not verified by a new PR run yet. Before merging, confirm the current PR
-revision passes `verify` and `promotion-ready`, the artifact contains
-`verification-result.json`, and the upload step has no Node 20 or
-`punycode` deprecation warning. Recheck main after merge before deploy.
+The [2026-10-07 main run](https://github.com/cokogom1-star/making_jeontongju/actions/runs/37569275319)
+on `32d8575` used GitHub-hosted runner 2.337.0. Its isolated PostgreSQL
+verifier reported 30 tests run with all passing; both `verify` and
+`promotion-ready` succeeded. The `actions/upload-artifact@v6` step succeeded
+and uploaded `ourisul-verification` (artifact ID `11460087214`) from
+`verification-result.json`. The verify job log showed no Node 20 or
+`punycode` deprecation warning. This confirms that run's CI evidence, not
+live provider connectivity or a production deployment. Each future PR still
+needs successful checks and its own verification artifact on its exact head,
+followed by a successful main check before deploy.
 
 ## Remaining product work
 
