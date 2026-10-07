@@ -807,7 +807,7 @@ def main():
 
                 def test_synthetic_exact_inspection_is_read_only(self):
                     ids = {name: 'TEST-' + secrets.token_hex(16) for name in
-                           ('ready', 'deferred', 'leased', 'both', 'delivered')}
+                           ('ready', 'deferred', 'leased', 'both', 'delivered', 'delivered_both')}
                     for order_id in ids.values():
                         self.assertTrue(test_orders.record_test_order(order_id))
                     orphan = 'TEST-' + secrets.token_hex(16)
@@ -825,6 +825,10 @@ def main():
                             WHERE source = 'synthetic' AND order_id = %s''', (ids['both'],))
                         conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now()
                             WHERE source = 'synthetic' AND order_id = %s''', (ids['delivered'],))
+                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now(),
+                            next_attempt_at = now() + interval '5 minutes',
+                            lease_until = now() + interval '5 minutes'
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['delivered_both'],))
                         conn.execute('''INSERT INTO ourisul_order_notice
                             (source, order_id, status, ordered_at, item_count)
                             VALUES ('synthetic', %s, 'TEST_CREATED', '2026-09-29T00:00:00Z', 0),
@@ -838,18 +842,23 @@ def main():
                         before_events = conn.execute('''SELECT *
                             FROM ourisul_test_order_event ORDER BY order_id, version''').fetchall()
                     with patch.dict(os.environ, {'VERIFY_DATABASE_URL': isolated_dsn,
-                                                 'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
-                        for name in ('ready', 'deferred', 'leased', 'both', 'delivered'):
+                                                 'DATABASE_URL': 'postgresql://dummy@localhost/production'}), \
+                            patch.object(requests.sessions.Session, 'request',
+                                         side_effect=AssertionError('Inspection must not use HTTP')) as http_request:
+                        for name in ('ready', 'deferred', 'leased', 'both', 'delivered', 'delivered_both'):
                             result = send_synthetic_orders.run(['--inspect', ids[name]])
                             self.assertEqual(result['order_id'], ids[name])
                             self.assertEqual(result['attempts'], 0)
-                            self.assertEqual(result['state'], 'leased' if name == 'both' else name)
+                            expected_state = {'both': 'leased', 'delivered_both': 'delivered'}.get(name, name)
+                            self.assertEqual(result['state'], expected_state)
                             if name == 'deferred':
                                 self.assertIn('retry_at', result)
                             if name in ('leased', 'both'):
                                 self.assertIn('lease_until', result)
-                            if name == 'delivered':
+                            if name in ('delivered', 'delivered_both'):
                                 self.assertIn('delivered_at', result)
+                                self.assertNotIn('lease_until', result)
+                                self.assertNotIn('retry_at', result)
                         for order_id in (missing, orphan):
                             self.assertEqual(send_synthetic_orders.run(['--inspect', order_id]),
                                              {'order_id': order_id, 'state': 'missing'})
@@ -864,6 +873,7 @@ def main():
                                 with self.assertRaises(SystemExit) as rejected:
                                     send_synthetic_orders.run(actions)
                             self.assertEqual(rejected.exception.code, 2)
+                        http_request.assert_not_called()
                     with cafe24.database() as conn:
                         after = conn.execute('''SELECT source, order_id, attempts, delivered_at,
                             next_attempt_at, lease_until FROM ourisul_order_notice
@@ -875,6 +885,26 @@ def main():
                     self.assertEqual(after, before)
                     self.assertEqual(after_states, before_states)
                     self.assertEqual(after_events, before_events)
+
+                def test_synthetic_inspection_lease_at_now_is_active(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    # PostgreSQL now() is transaction-stable, so this checks equality
+                    # instead of racing two wall-clock reads across transactions.
+                    conn = cafe24.database()
+                    try:
+                        conn.execute('''UPDATE ourisul_order_notice SET lease_until = now(),
+                            next_attempt_at = now() + interval '5 minutes'
+                            WHERE source = 'synthetic' AND order_id = %s''', (order_id,))
+                        with patch.object(requests.sessions.Session, 'request',
+                                          side_effect=AssertionError('Inspection must not use HTTP')) as http_request:
+                            result = notices.synthetic_notice_status(lambda: conn, order_id)
+                            http_request.assert_not_called()
+                        self.assertEqual(result['state'], 'leased')
+                        self.assertIn('lease_until', result)
+                        self.assertNotIn('retry_at', result)
+                    finally:
+                        conn.close()
 
                 def test_synthetic_inspection_requires_initialized_tables(self):
                     connection = Mock()

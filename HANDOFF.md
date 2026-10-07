@@ -28,6 +28,11 @@ leased, or not-yet-retryable IDs result in zero sends. Delivery also requires
 test-order record, sends an ID-only `[테스트·미운영]` message, and retries failures
 with a fenced lease. The regular worker cannot claim synthetic notices.
 
+The isolated PostgreSQL verifier covers inspection priority when a delivered
+notice also has an active lease and future retry, and when a lease is exactly
+`now()` (active). It asserts zero HTTP requests from inspection. These are
+test-only checks; no webhook is contacted.
+
 No Slack test webhook or disposable database credentials were available for a
 live delivery check. No external Slack message was sent. The verifier exercises
 the sender with a fake Slack response and an isolated PostgreSQL schema; it
