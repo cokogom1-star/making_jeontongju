@@ -92,20 +92,25 @@ followed by a successful main check before deploy.
 ## Taste explorer
 
 The public `/taste-explorer` page provides four editorial paths: whisky,
-soju/traditional liquor, beer and wine. Each has three native-radio questions
-and a deterministic, category-specific reading of the selected style, texture
-and finish. Whisky covers fruit, oak and smoky directions; traditional liquor
-covers clear rice wine, takju and distilled soju; beer covers lager, wheat beer,
-IPA and stout; wine covers white, red and sparkling. The visitor chooses the
-style explicitly. It is a vocabulary and comparison exercise, not a personality
-diagnosis, measured compatibility score or product recommendation. It does not
-read or write a database, request a provider, or expose a purchase action in
-the result. The GET query has a finite allowlist; incomplete, duplicate,
-unknown, or out-of-range answers return a 400 page with a restart link. Answers
-remain in the user's URL/history after submission, so this feature does not
-claim private or persistent profile storage. The Flask verifier covers all
-four paths, invalid inputs, native controls and absence of catalog/database
-access; a real browser accessibility pass is still separate.
+soju/traditional liquor, beer and wine. Each has three native-radio sensory
+questions (aroma, body, finish); visitors do not select a style directly.
+An ordered, category-specific profile table counts how many of the three
+answers overlap each named style, shows the first style with the most overlaps,
+and discloses the fixed editorial order when there is a tie. All 13 detailed
+styles remain reachable: whisky (fruit, oak, smoky), traditional liquor
+(clear rice wine, takju, distilled soju), beer (lager, wheat beer, IPA, stout),
+and wine (white, red, sparkling). The result explains the style and repeats
+the chosen sensory terms. It is a vocabulary and comparison exercise, not a
+personality diagnosis, measured compatibility score or product recommendation.
+It does not read or write a database, request a provider, or expose a purchase
+action in the result. The GET query has a finite allowlist; incomplete,
+duplicate (even identical duplicate), unknown, or out-of-range answers return
+a 400 page with a restart link. Answers remain in the user's URL/history after
+submission, so this feature does not claim private or persistent profile
+storage. The Flask verifier exhaustively checks every possible answer tuple,
+all 13 style results, tie handling, invalid inputs, native controls and
+absence of catalog/database access; a real browser accessibility pass is still
+separate.
 
 ## Remaining product work
 
@@ -115,4 +120,5 @@ access; a real browser accessibility pass is still separate.
 - Build a board and Q&A workflow with moderation and access rules.
 - Design real order and delivery management with payment, fulfillment, and
   channel reconciliation. The synthetic order table is not that ledger.
+
 
