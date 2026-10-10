@@ -84,7 +84,7 @@ def main():
             import send_synthetic_orders
             import synthetic_order_history as fulfillment
             import test_orders
-            from app import app, TASTE_CATEGORIES, infer_taste_style
+            from app import app
             app.config.update(TESTING=True)
 
             def response(payload=None, status=200, text='ok'):
@@ -981,78 +981,105 @@ def main():
                     with self.assertRaisesRegex(AssertionError, 'Unexpected external HTTP'):
                         requests.get('https://example.invalid/')
 
-                def test_taste_explorer_four_categories_and_no_provider_access(self):
+                def test_taste_explorer_unified_editorial_ranking_without_provider_access(self):
+                    from app import TASTE_QUESTIONS, TASTE_STYLES, TASTE_WEIGHTS, rank_taste_styles
+                    keys = tuple(question[0] for question in TASTE_QUESTIONS)
                     with patch('app.products_for_page', side_effect=AssertionError('catalog accessed')), patch.object(
                             cafe24, 'database', side_effect=AssertionError('database accessed')):
                         landing = self.get('/taste-explorer')
                         self.assertEqual(landing.status_code, 200)
-                        self.assertIn('위스키', landing.get_data(as_text=True))
-                        self.assertIn('와인', landing.get_data(as_text=True))
+                        text = landing.get_data(as_text=True)
+                        self.assertIn('위스키·맥주·와인·전통주', text)
+                        self.assertNotIn('name="category"', text)
+                        self.assertNotIn('taste-categories', text.split('<main id="main">', 1)[1])
                         self.assertIn('href="/taste-explorer"', self.get('/about').get_data(as_text=True))
-                        all_styles = set()
-                        for category_key, category in TASTE_CATEGORIES.items():
-                            form = self.get('/taste-explorer', query_string={'category': category_key})
-                            self.assertEqual(form.status_code, 200)
-                            form_text = form.get_data(as_text=True)
-                            self.assertIn('<fieldset>', form_text)
-                            self.assertIn('action="/taste-explorer#taste-result"', form_text)
-                            self.assertIn(' → '.join(style[0] for style in category['styles']), form_text)
-                            self.assertNotIn('name="style"', form_text)
-                            radio_count = sum(len(options) for _, _, options in category['questions'])
-                            self.assertEqual(form_text.count('type="radio"'), radio_count)
-                            self.assertEqual(form_text.count('required'), radio_count)
-                            self.assertEqual(form_text.count('<fieldset>'), 3)
-                            seen = set()
-                            tie_count = 0
-                            for answers in product(*(tuple(option[0] for option in options)
-                                                     for _, _, options in category['questions'])):
-                                params = {'category': category_key, **dict(zip(('aroma', 'body', 'finish'), answers))}
-                                expected, tied = infer_taste_style(category, answers)
-                                page = self.get('/taste-explorer', query_string=params)
-                                self.assertEqual(page.status_code, 200)
-                                self.assertEqual(page.headers['Cache-Control'], 'no-store')
-                                result = page.get_data(as_text=True).split('id="taste-result"', 1)[1].split('</div>', 1)[0]
-                                self.assertIn('role="region"', result)
-                                self.assertIn('tabindex="-1"', result)
-                                self.assertIn('먼저 탐색할 ' + category['name'] + ' 스타일: ' + expected[0], result)
-                                self.assertIn(expected[1], result)
-                                self.assertEqual('여러 스타일이 같은 개수로 겹쳐' in result, tied)
-                                tie_count += tied
-                                self.assertIn('특정 상품 추천, 적합도 점수, 구매 가능 여부를 뜻하지 않습니다.', result)
-                                self.assertNotIn('href="/products', result)
-                                self.assertNotIn('%', result)
-                                seen.add(expected[0])
-                                self.assertEqual(infer_taste_style(category, answers), (expected, tied))
-                            self.assertEqual(seen, {style[0] for style in category['styles']})
-                            self.assertGreater(tie_count, 0)
-                            for style in category['styles']:
-                                self.assertEqual(infer_taste_style(category, style[2]), (style, False))
-                            all_styles.update(seen)
-                        self.assertEqual(len(all_styles), 13)
-                        # Three beer profiles tie on two choices; declared order selects lager.
-                        tied_page = self.get('/taste-explorer', query_string={
-                            'category': 'beer', 'aroma': 'fruit', 'body': 'light', 'finish': 'crisp'})
-                        self.assertIn('스타일: 라거', tied_page.get_data(as_text=True))
-                        self.assertIn('여러 스타일이 같은 개수로 겹쳐', tied_page.get_data(as_text=True))
+                        self.assertEqual(text.count('<fieldset>'), 7)
+                        self.assertEqual(text.count('type="radio"'), sum(len(q[2]) for q in TASTE_QUESTIONS))
+                        self.assertEqual(text.count(' required '), sum(len(q[2]) for q in TASTE_QUESTIONS))
+                        self.assertIn('action="/taste-explorer#taste-result"', text)
+                        self.assertNotIn('name="style"', text)
+                        self.assertEqual(len(TASTE_STYLES), 28)
+                        self.assertEqual(len({style['key'] for style in TASTE_STYLES}), 28)
+                        self.assertEqual({style['category'] for style in TASTE_STYLES},
+                                         {'위스키', '맥주', '와인', '전통주'})
+                        for style in TASTE_STYLES:
+                            self.assertEqual(len(style['profile']), len(keys))
+                            self.assertTrue(all(style[field] for field in ('character', 'explore', 'compare')))
+                            self.assertTrue(all(feature in {option[0] for option in question[2]}
+                                                for feature, question in zip(style['profile'], TASTE_QUESTIONS)))
+                        first_place = set()
+                        tied_top = 0
+                        cutoff_ties = 0
+                        for answers in product(*(tuple(option[0] for option in question[2])
+                                                 for question in TASTE_QUESTIONS)):
+                            # Independent reference computation, avoiding the ranking helper under test.
+                            expected = sorted(TASTE_STYLES, key=lambda style: (
+                                -sum(weight for selected, feature, weight in zip(
+                                    answers, style['profile'], TASTE_WEIGHTS) if selected == feature), style['key']))
+                            actual = [row[1] for row in rank_taste_styles(answers)]
+                            self.assertEqual(actual, expected)
+                            first_place.add(actual[0]['key'])
+                            top_score = rank_taste_styles(answers)[0][0]
+                            tied_top += sum(score == top_score for score, _ in rank_taste_styles(answers)) > 1
+                            cutoff_ties += rank_taste_styles(answers)[2][0] == rank_taste_styles(answers)[3][0]
+                        self.assertEqual(first_place, {style['key'] for style in TASTE_STYLES})
+                        self.assertGreater(tied_top, 0)
+                        self.assertGreater(cutoff_ties, 0)
+                        # Golden examples selected by editorial expectation, rather than a computed result.
+                        golden = (
+                            (('smoke', 'dry', 'full', 'soft', 'pronounced', 'clear', 'long'), '피트 위스키'),
+                            (('roast', 'dry', 'medium', 'soft', 'pronounced', 'creamy', 'long'), '드라이 스타우트'),
+                            (('fruit', 'dry', 'light', 'bright', 'low', 'bubbly', 'clean'), '브뤼 스파클링 와인'),
+                            (('grain', 'round', 'medium', 'bright', 'low', 'creamy', 'clean'), '탁주'),
+                            (('spice', 'round', 'full', 'soft', 'low', 'clear', 'long'), '버번'),
+                            (('fruit', 'dry', 'light', 'soft', 'low', 'clear', 'clean'), '과일 향 몰트 위스키'),
+                        )
+                        for answers, expected_name in golden:
+                            page = self.get('/taste-explorer', query_string=dict(zip(keys, answers)))
+                            self.assertEqual(page.status_code, 200)
+                            self.assertEqual(page.headers['Cache-Control'], 'no-store')
+                            result = page.get_data(as_text=True).split('id="taste-result"', 1)[1]
+                            self.assertIn('role="region"', result)
+                            self.assertIn('tabindex="-1"', result)
+                            self.assertIn('먼저 살펴볼 스타일: ' + expected_name, result)
+                            self.assertEqual(result.count('class="taste-style"'), 3)
+                            self.assertIn('답과 겹친 감각:', result)
+                            self.assertIn('비교해 볼 점', result)
+                            self.assertIn('특정 상품, 구매 가능 여부나 측정된 적합도를 뜻하지 않습니다.', result)
+                            self.assertNotIn('href="/products', result)
+                        # Top and cutoff ties are disclosed, including the omitted fourth profile.
+                        tied = self.get('/taste-explorer', query_string=dict(zip(keys,
+                            ('fruit', 'dry', 'light', 'soft', 'low', 'clear', 'clean')))).get_data(as_text=True)
+                        self.assertIn('같은 점수의 다른 스타일도 있습니다.', tied)
+                        top_tied = self.get('/taste-explorer', query_string=dict(zip(keys,
+                            ('fruit', 'dry', 'medium', 'soft', 'low', 'clear', 'long')))).get_data(as_text=True)
+                        self.assertIn('함께 살펴볼 스타일', top_tied)
+                        self.assertIn('가장 앞선 4가지 스타일은 동점', top_tied)
+                        self.assertEqual(top_tied.count('class="taste-style"'), 4)
+                        for name in ('복분자주', '셰리 캐스크 위스키', '카베르네 소비뇽', '피노 누아'):
+                            self.assertIn('<h3>' + name + '</h3>', top_tied)
 
                 def test_taste_explorer_rejects_ambiguous_or_invalid_answers(self):
+                    from app import TASTE_QUESTIONS
+                    valid = dict((q[0], q[2][0][0]) for q in TASTE_QUESTIONS)
+                    from urllib.parse import urlencode
                     invalid = (
-                        '/taste-explorer?category=unknown',
-                        '/taste-explorer?category=beer&aroma=fruit',
-                        '/taste-explorer?category=beer&aroma=invalid&body=light&finish=crisp',
-                        '/taste-explorer?category=beer&aroma=fruit&aroma=fruit&body=light&finish=crisp',
-                        '/taste-explorer?category=beer&category=wine&aroma=fruit&body=light&finish=crisp',
-                        '/taste-explorer?category=beer&aroma=fruit&body=light&body=full&finish=crisp',
-                        '/taste-explorer?category=beer&aroma=fruit&body=light&finish=crisp&finish=crisp',
-                        '/taste-explorer?category=beer&aroma=fruit&body=light&finish=crisp&extra=1',
-                        '/taste-explorer?category=beer&aroma=fruit&body=light&finish=crisp&style=ipa',
-                        '/taste-explorer?aroma=fruit&body=light&finish=crisp',
+                        {'category': 'beer', **valid},
+                        {**valid, 'style': 'ipa'},
+                        {**valid, 'aroma': 'invalid'},
+                        {key: value for key, value in valid.items() if key != 'finish'},
                     )
-                    for path in invalid:
+                    for params in invalid:
+                        path = '/taste-explorer?' + urlencode(params)
                         page = self.get(path)
                         self.assertEqual(page.status_code, 400, path)
                         self.assertIn('취향 탐색 다시 시작하기', page.get_data(as_text=True))
                         self.assertEqual(page.headers['Cache-Control'], 'no-store')
+                    for extra in ('aroma=fruit', 'finish=clean', 'category=beer', 'unexpected=1'):
+                        path = '/taste-explorer?' + urlencode(valid) + '&' + extra
+                        self.assertEqual(self.get(path).status_code, 400, path)
+                    self.assertEqual(self.get('/taste-explorer?aroma=fruit').status_code, 400)
+                    self.assertEqual(self.get('/taste-explorer?category=beer').status_code, 400)
 
             class Results(unittest.TextTestResult):
                 def addSuccess(self, test):
