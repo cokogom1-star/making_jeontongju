@@ -1038,7 +1038,7 @@ def main():
                             page = self.get('/taste-explorer', query_string=dict(zip(keys, answers)))
                             self.assertEqual(page.status_code, 200)
                             self.assertEqual(page.headers['Cache-Control'], 'no-store')
-                            result = page.get_data(as_text=True).split('id="taste-result"', 1)[1]
+                            result = page.get_data(as_text=True).split('id="taste-result"', 1)[1].split('</section>', 1)[0]
                             self.assertIn('role="region"', result)
                             self.assertIn('tabindex="-1"', result)
                             self.assertIn('먼저 살펴볼 스타일: ' + expected_name, result)
