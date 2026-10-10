@@ -94,7 +94,7 @@ section{max-width:1200px;margin:auto;padding:110px 7%}.intro h2,.story h2{font-s
 .page-hero{padding:85px 7% 55px;max-width:1200px;margin:auto;border-bottom:1px solid #d8d1c4}.page-hero h1{font-size:clamp(42px,6vw,70px);font-weight:500;line-height:1.2;margin:12px 0 22px}.page-hero p{max-width:720px;font-size:18px}.page-section{padding-top:60px;padding-bottom:70px}.page-section h2{font-size:clamp(29px,4vw,42px);font-weight:500}.page-section p{max-width:780px}.page-links{display:flex;gap:14px;flex-wrap:wrap}.page-links a,.text-link{color:inherit;text-underline-offset:5px}.flow-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.flow-grid article{padding:26px;border:1px solid #d8d1c4}.flow-grid strong{font-size:21px;font-weight:500}.flow-grid p{color:#625b51}.active-link{text-decoration:underline!important;text-underline-offset:7px}.product:hover,.button:hover{background:#eee7d9}.text-link{display:inline-block;margin-top:20px}
 .card-link{display:block;color:inherit;text-decoration:none}.card-link:hover h3,.card-link:focus-visible h3{text-decoration:underline;text-underline-offset:6px}.flow-grid article[id]{scroll-margin-top:96px}.breadcrumb{font-size:13px;margin:0 0 22px;color:#625b51}.breadcrumb a{color:inherit;text-underline-offset:4px}.status-label{display:block;font-size:13px;color:#625b51;margin:5px 0}.skip-link{position:absolute;left:10px;top:-80px;background:#24221e;color:#fff;padding:10px;z-index:20}.skip-link:focus{top:10px}a:focus-visible,summary:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid #7a4824;outline-offset:4px}
 .detail-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.detail-actions .button{margin-top:8px}.detail-note{padding:15px 18px;border-left:3px solid #8c8274;background:#eee7d9}.detail-note p{margin:0}.detail-note a{color:inherit;text-underline-offset:4px}
-.taste-categories{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}.taste-category{display:block;padding:24px;border:1px solid #d8d1c4;color:inherit;text-decoration:none;background:#fff}.taste-category:hover,.taste-category:focus-visible{background:#eee7d9}.taste-category strong{display:block;font-size:24px;font-weight:500}.taste-category p{margin-bottom:0}.taste-form fieldset{border:1px solid #d8d1c4;margin:0 0 18px;padding:20px}.taste-form legend{font-size:21px;padding:0 6px}.taste-form label{display:block;margin:10px 0;cursor:pointer}.taste-form input{margin-right:9px;accent-color:#7a4824}.taste-form button{font:inherit;background:#24221e;color:#fff;border:0;padding:12px 26px;cursor:pointer}.taste-result{border-top:2px solid #8c8274;padding-top:24px}.taste-result li{margin:12px 0}.taste-note{color:#625b51}
+.taste-categories{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}.taste-category{display:block;padding:24px;border:1px solid #d8d1c4;color:inherit;text-decoration:none;background:#fff}.taste-category:hover,.taste-category:focus-visible{background:#eee7d9}.taste-category strong{display:block;font-size:24px;font-weight:500}.taste-category p{margin-bottom:0}.taste-form fieldset{border:1px solid #d8d1c4;margin:0 0 18px;padding:20px}.taste-form legend{font-size:21px;padding:0 6px}.taste-form label{display:flex;align-items:center;min-height:44px;margin:4px 0;cursor:pointer}.taste-form input{margin-right:12px;accent-color:#7a4824}.taste-form button{font:inherit;background:#24221e;color:#fff;border:0;padding:12px 26px;cursor:pointer}.taste-result{border-top:2px solid #8c8274;padding-top:24px;scroll-margin-top:96px}.taste-result li{margin:12px 0}.taste-note{color:#625b51}
 footer{padding:60px 7%;border-top:1px solid #d8d1c4}@media(max-width:1150px){.desktop-nav{display:none}.mobile-nav{display:block;position:relative}.mobile-nav summary{cursor:pointer;list-style:none;border:1px solid #9b9184;padding:7px 13px}.mobile-nav summary::-webkit-details-marker{display:none}.mobile-nav nav{position:absolute;right:0;top:42px;width:180px;background:#f6f2e9;border:1px solid #d8d1c4;box-shadow:0 12px 25px #24221e22;display:grid;padding:10px}.mobile-nav:not([open]) nav{display:none}.mobile-nav a{padding:10px 12px}}
 @media(max-width:700px){.hero{min-height:570px;padding:18% 7%}.cards,.steps,.flow-grid,.taste-categories{grid-template-columns:1fr}section{padding:80px 7%}.catalog{grid-template-columns:1fr 1fr;gap:12px}.detail{grid-template-columns:1fr}.product-copy{padding:13px}.product-copy h3{font-size:18px}}
 @media(max-width:480px){.catalog{grid-template-columns:1fr}}
@@ -179,45 +179,74 @@ def shared_chrome():
     return css, header, footer
 
 
-# Editorial prompts only: these choices are not product attributes or match scores.
+# Editorial vocabulary only: profiles are not product attributes or measured matches.
 TASTE_CATEGORIES = {
     'whisky': {
-        'name': '위스키', 'intro': '과일 향 중심, 오크 향 중심, 스모키한 방향 중 궁금한 스타일을 고르고 질감과 끝맛을 살펴보세요.',
+        'name': '위스키', 'intro': '끌리는 향, 질감, 마무리를 골라 위스키의 한 가지 방향을 살펴보세요.',
         'compare': '같은 종류의 잔을 비교할 때 향을 맡은 뒤 한 모금의 질감과 남는 느낌을 따로 기록해 보세요.',
         'questions': (
-            ('style', '어떤 스타일을 먼저 탐색할까요?', (('fruit', '과일 향 중심', '과일이나 꽃을 떠올리게 하는 향을 비교하는 출발점입니다.'), ('oak', '오크 향 중심', '나무나 바닐라를 떠올리게 하는 향을 비교하는 출발점입니다.'), ('smoke', '스모키한 방향', '연기나 그을음을 떠올리게 하는 향을 비교하는 출발점입니다.'))),
+            ('aroma', '어떤 향에 먼저 눈길이 가나요?', (('fruit', '과일이나 꽃', '밝은 과일·꽃 향을 먼저 떠올립니다.'), ('wood', '나무나 바닐라', '나무·바닐라 향을 먼저 떠올립니다.'), ('smoke', '연기나 그을음', '연기·그을음 향을 먼저 떠올립니다.'))),
             ('body', '입안의 질감은 어느 쪽이 끌리나요?', (('light', '가볍고 산뜻한 질감', '입안에서 가볍게 지나가는 질감을 선호합니다.'), ('full', '묵직하고 둥근 질감', '입안을 채우는 둥근 질감을 선호합니다.'))),
             ('finish', '마신 뒤에는 무엇을 살펴보고 싶나요?', (('clean', '깔끔하게 끝나는 느낌', '끝맛이 정리되는 순간을 살펴보세요.'), ('lingering', '천천히 남는 여운', '향과 맛이 얼마나 오래 남는지 살펴보세요.'))),
         ),
+        'styles': (
+            ('과일 향 중심 위스키', '과일·꽃 향과 가벼운 질감, 깔끔한 마무리를 비교하는 출발점입니다.', ('fruit', 'light', 'clean')),
+            ('오크 향 중심 위스키', '나무·바닐라 향과 둥근 질감, 길게 남는 인상을 비교해 보세요.', ('wood', 'full', 'lingering')),
+            ('스모키 위스키', '연기 향이 질감과 마무리에 어떻게 겹치는지 살펴보세요.', ('smoke', 'full', 'clean')),
+        ),
     },
     'soju-traditional': {
-        'name': '소주·전통주', 'intro': '맑은 술, 탁주, 증류식 소주를 탐색하고 입안의 느낌과 끝맛을 골라 보세요.',
+        'name': '소주·전통주', 'intro': '끌리는 향, 입안의 느낌, 끝맛을 골라 전통주의 한 가지 방향을 살펴보세요.',
         'compare': '전통주는 종류와 만드는 방식이 다양합니다. 실제 술의 원료·도수·설명을 먼저 확인하고, 느낀 점을 비교해 보세요.',
         'questions': (
-            ('style', '어떤 종류를 먼저 탐색할까요?', (('clear', '맑은 술', '청주 등 맑은 술의 원료 향과 질감을 살펴보는 출발점입니다.'), ('takju', '탁주', '탁주의 질감과 발효에서 오는 향을 살펴보는 출발점입니다.'), ('distilled', '증류식 소주', '증류식 소주의 향과 마무리를 살펴보는 출발점입니다.'))),
+            ('aroma', '어떤 향이 더 궁금한가요?', (('floral', '은은한 꽃·과일 향', '섬세한 향을 먼저 떠올립니다.'), ('grain', '쌀·곡물 향', '쌀과 곡물의 향을 먼저 떠올립니다.'), ('herbal', '허브·향신료 같은 향', '또렷한 향의 인상을 먼저 떠올립니다.'))),
             ('body', '어떤 입안의 느낌이 끌리나요?', (('clear', '맑고 가벼운 느낌', '가볍고 맑게 느껴지는 질감을 선호합니다.'), ('soft', '부드럽고 풍성한 느낌', '부드럽고 풍성하게 느껴지는 질감을 선호합니다.'))),
             ('finish', '끝맛은 어느 쪽이 좋나요?', (('dry', '담백하고 깔끔한 끝맛', '담백하게 마무리되는 느낌에 주목합니다.'), ('round', '은은하게 남는 끝맛', '입안에 은은하게 남는 느낌에 주목합니다.'))),
         ),
+        'styles': (
+            ('맑은 쌀술·청주', '맑게 거른 쌀술의 섬세한 향과 가벼운 질감을 살펴보세요.', ('floral', 'clear', 'dry')),
+            ('탁주', '쌀·곡물 향과 부드러운 질감, 둥근 끝맛을 비교해 보세요.', ('grain', 'soft', 'round')),
+            ('증류식 소주', '원료와 제조 방식에 따라 달라지는 향과 담백한 마무리를 비교해 보세요.', ('herbal', 'clear', 'dry')),
+        ),
     },
     'beer': {
-        'name': '맥주', 'intro': '라거, 밀맥주, IPA, 스타우트 중 궁금한 스타일을 고르고 무게감과 마무리를 살펴보세요.',
+        'name': '맥주', 'intro': '끌리는 향, 무게감, 마무리를 골라 맥주의 한 가지 방향을 살펴보세요.',
         'compare': '맥주를 비교할 때는 향, 탄산감, 입안의 무게감과 끝맛을 따로 메모해 보세요.',
         'questions': (
-            ('style', '어떤 스타일을 먼저 탐색할까요?', (('lager', '라거', '라거의 향, 탄산감과 마무리를 비교하는 출발점입니다.'), ('wheat', '밀맥주', '밀맥주의 향과 질감을 비교하는 출발점입니다.'), ('ipa', 'IPA', 'IPA의 홉 향과 쓴맛의 인상을 살펴보는 출발점입니다.'), ('stout', '스타우트', '스타우트의 볶은 곡물 향과 무게감을 살펴보는 출발점입니다.'))),
+            ('aroma', '어떤 향이 끌리나요?', (('grain', '담백한 곡물 향', '담백한 곡물 향에 주목합니다.'), ('fruit', '과일이나 꽃 같은 향', '밝고 화사한 향에 주목합니다.'), ('roast', '볶은 곡물·커피 향', '고소하고 진한 향에 주목합니다.'))),
             ('body', '입안의 무게감은 어느 쪽인가요?', (('light', '가볍고 경쾌함', '가볍게 지나가는 무게감을 선호합니다.'), ('full', '도톰하고 풍성함', '도톰하게 느껴지는 무게감을 선호합니다.'))),
             ('finish', '마무리는 어느 쪽이 끌리나요?', (('crisp', '산뜻하고 깔끔함', '산뜻하게 정리되는 마무리에 주목합니다.'), ('lingering', '맛이 조금 더 남음', '마신 뒤 남는 인상에 주목합니다.'))),
         ),
+        'styles': (
+            ('라거', '담백한 곡물 향과 경쾌하고 깔끔한 마무리를 살펴보세요.', ('grain', 'light', 'crisp')),
+            ('밀맥주', '과일 같은 향과 도톰한 질감이 어울리는 방향을 살펴보세요.', ('fruit', 'full', 'crisp')),
+            ('IPA', '화사한 홉 향과 길게 남는 인상을 비교해 보세요.', ('fruit', 'light', 'lingering')),
+            ('스타우트', '볶은 곡물 향과 풍성한 질감, 남는 여운을 살펴보세요.', ('roast', 'full', 'lingering')),
+        ),
     },
     'wine': {
-        'name': '와인', 'intro': '화이트, 레드, 스파클링 중 궁금한 스타일을 고르고 무게감과 마무리를 살펴보세요.',
+        'name': '와인', 'intro': '끌리는 향, 무게감, 마무리를 골라 와인의 한 가지 방향을 살펴보세요.',
         'compare': '와인을 비교할 때는 색이나 품종만으로 판단하지 말고 향, 산도, 질감을 각각 기록해 보세요.',
         'questions': (
-            ('style', '어떤 스타일을 먼저 탐색할까요?', (('white', '화이트 와인', '화이트 와인의 향과 산도를 비교하는 출발점입니다.'), ('red', '레드 와인', '레드 와인의 향과 질감을 비교하는 출발점입니다.'), ('sparkling', '스파클링 와인', '스파클링 와인의 기포와 마무리를 살펴보는 출발점입니다.'))),
+            ('aroma', '어떤 향이 더 궁금한가요?', (('citrus', '감귤·풋과일 향', '상큼한 과일 향을 먼저 떠올립니다.'), ('berry', '붉은 과일 향', '베리 같은 향을 먼저 떠올립니다.'), ('floral', '꽃·가벼운 과일 향', '섬세한 향을 먼저 떠올립니다.'))),
             ('body', '입안의 무게감은 어느 쪽인가요?', (('light', '가볍고 섬세함', '가볍고 섬세하게 느껴지는 질감을 선호합니다.'), ('full', '풍성하고 도톰함', '풍성하고 도톰하게 느껴지는 질감을 선호합니다.'))),
             ('finish', '마무리의 인상은 어느 쪽인가요?', (('fresh', '산뜻하게 정리됨', '산뜻하게 정리되는 마무리에 주목합니다.'), ('round', '부드럽게 이어짐', '부드럽게 이어지는 마무리에 주목합니다.'))),
         ),
+        'styles': (
+            ('화이트 와인', '감귤·풋과일 향과 산뜻한 마무리를 살펴보세요.', ('citrus', 'light', 'fresh')),
+            ('레드 와인', '붉은 과일 향과 도톰한 질감, 둥근 마무리를 비교해 보세요.', ('berry', 'full', 'round')),
+            ('스파클링 와인', '섬세한 향과 가벼운 질감, 기포가 주는 산뜻함을 살펴보세요.', ('floral', 'light', 'fresh')),
+        ),
     },
 }
+
+
+def infer_taste_style(category, answers):
+    """Count matching sensory choices; fixed editorial order breaks equal counts."""
+    counts = [sum(answer == profile_value for answer, profile_value in zip(answers, style[2]))
+              for style in category['styles']]
+    highest = max(counts)
+    return category['styles'][counts.index(highest)], counts.count(highest) > 1
 
 
 @app.route('/taste-explorer')
@@ -228,28 +257,34 @@ def taste_explorer():
         return markup, 400, {'Cache-Control': 'no-store'}
 
     # Reject ambiguous and unrecognized inputs before rendering a result.
-    if any(key not in {'category', 'style', 'body', 'finish'} or len(request.args.getlist(key)) != 1
+    if any(key not in {'category', 'aroma', 'body', 'finish'} or len(request.args.getlist(key)) != 1
            for key in request.args):
         return invalid_selection()
     category_key = request.args.get('category')
     if category_key is not None and category_key not in TASTE_CATEGORIES:
         return invalid_selection()
     category = TASTE_CATEGORIES.get(category_key)
-    answer_keys = {'style', 'body', 'finish'}
+    answer_keys = {'aroma', 'body', 'finish'}
     submitted = any(key in request.args for key in answer_keys)
     if submitted and (category is None or not answer_keys.issubset(request.args)):
         return invalid_selection()
     selections = []
+    answers = []
+    inferred_style = None
+    tied = False
     if submitted:
         for key, prompt, options in category['questions']:
             selected = next((option for option in options if option[0] == request.args[key]), None)
             if selected is None:
                 return invalid_selection()
             selections.append((prompt, selected[1], selected[2]))
+            answers.append(selected[0])
+        inferred_style, tied = infer_taste_style(category, answers)
     css, header, footer = shared_chrome()
-    markup = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>취향 탐색 | 우리술</title><style>''' + css + '''</style></head><body><a class="skip-link" href="#main">본문으로 건너뛰기</a><div class="preview">취향 탐색은 정보용입니다. 이 사이트에서는 주문을 받지 않습니다.</div>''' + header + '''<main id="main"><div class="page-hero"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a> / <span aria-current="page">취향 탐색</span></nav><span class="eyebrow">TASTE EXPLORER</span><h1>나의 술 취향 살펴보기</h1><p>위스키, 소주·전통주, 맥주, 와인 중 하나를 고르고 세 가지 감각을 선택해 보세요. 정답이나 성격 유형을 판정하는 검사가 아닌, 취향을 설명하는 작은 기록입니다.</p></div><section class="page-section">{% if not category %}<h2>어떤 술부터 살펴볼까요?</h2><div class="taste-categories">{% for key, item in categories.items() %}<a class="taste-category" href="/taste-explorer?category={{key}}"><strong>{{item.name}}</strong><p>{{item.intro}}</p><span>탐색하기 →</span></a>{% endfor %}</div>{% else %}<p><a href="/taste-explorer">← 다른 종류 선택</a></p><h2>{{category.name}} 취향 카드</h2><p>{{category.intro}}</p><form class="taste-form" method="get" action="/taste-explorer#taste-result"><input type="hidden" name="category" value="{{category_key}}">{% for key, prompt, options in category.questions %}<fieldset><legend>{{loop.index}}. {{prompt}}</legend>{% for value, label, note in options %}<label><input type="radio" name="{{key}}" value="{{value}}" required {% if request.args.get(key) == value %}checked{% endif %}>{{label}}</label>{% endfor %}</fieldset>{% endfor %}<button type="submit">내 취향 카드 보기</button></form>{% if submitted %}<div class="taste-result" id="taste-result" role="region" aria-labelledby="taste-result-title" tabindex="-1"><h2 id="taste-result-title">선택한 {{category.name}} 스타일: {{selections[0][1]}}</h2><p>내가 고른 스타일과 두 가지 질감 표현입니다. 실제 술에서 느껴지는 향과 맛은 제품과 사람에 따라 다를 수 있습니다.</p><ol>{% for prompt, label, note in selections %}<li><strong>{{label}}</strong><br>{{note}}</li>{% endfor %}</ol><h3>다음에 살펴볼 점</h3><p>{{category.compare}}</p><p class="taste-note">이 카드는 시음 대화를 돕는 정보입니다. 특정 상품 추천, 적합도 점수, 구매 가능 여부를 뜻하지 않습니다.</p><a href="/taste-explorer?category={{category_key}}">같은 종류 다시 탐색하기</a></div>{% endif %}{% endif %}</section></main>''' + footer + '''</body></html>'''
+    markup = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>취향 탐색 | 우리술</title><style>''' + css + '''</style></head><body><a class="skip-link" href="#main">본문으로 건너뛰기</a><div class="preview">취향 탐색은 정보용입니다. 이 사이트에서는 주문을 받지 않습니다.</div>''' + header + '''<main id="main"><div class="page-hero"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a> / <span aria-current="page">취향 탐색</span></nav><span class="eyebrow">TASTE EXPLORER</span><h1>나의 술 취향 살펴보기</h1><p>위스키, 소주·전통주, 맥주, 와인 중 하나를 고르고 세 가지 감각을 선택해 보세요. 정답이나 성격 유형을 판정하는 검사가 아닌, 취향을 설명하는 작은 기록입니다.</p></div><section class="page-section">{% if not category %}<h2>어떤 술부터 살펴볼까요?</h2><div class="taste-categories">{% for key, item in categories.items() %}<a class="taste-category" href="/taste-explorer?category={{key}}"><strong>{{item.name}}</strong><p>{{item.intro}}</p><span>탐색하기 →</span></a>{% endfor %}</div>{% else %}<p><a href="/taste-explorer">← 다른 종류 선택</a></p><h2>{{category.name}} 취향 카드</h2><p>{{category.intro}}</p><p class="taste-note">세 가지 답과 가장 많이 겹치는 스타일을 먼저 보여줍니다. 같은 개수로 겹치면 이 편집 순서에서 앞선 하나를 보여줍니다: {{category.styles | map(attribute=0) | join(' → ')}}.</p><form class="taste-form" method="get" action="/taste-explorer#taste-result"><input type="hidden" name="category" value="{{category_key}}">{% for key, prompt, options in category.questions %}<fieldset><legend>{{loop.index}}. {{prompt}}</legend>{% for value, label, note in options %}<label><input type="radio" name="{{key}}" value="{{value}}" required {% if request.args.get(key) == value %}checked{% endif %}>{{label}}</label>{% endfor %}</fieldset>{% endfor %}<button type="submit">내 취향 카드 보기</button></form>{% if submitted %}<div class="taste-result" id="taste-result" role="region" aria-labelledby="taste-result-title" tabindex="-1"><h2 id="taste-result-title">선택을 바탕으로 먼저 탐색할 {{category.name}} 스타일: {{inferred_style[0]}}</h2><p>{{inferred_style[1]}}</p>{% if tied %}<p class="taste-note">여러 스타일이 같은 개수로 겹쳐, 위 편집 순서에서 앞선 이 스타일을 표시했습니다.</p>{% endif %}<h3>내가 고른 감각</h3><ol>{% for prompt, label, note in selections %}<li><strong>{{label}}</strong><br>{{note}}</li>{% endfor %}</ol><h3>다음에 살펴볼 점</h3><p>{{category.compare}}</p><p class="taste-note">실제 술의 향과 맛은 제품과 사람에 따라 다를 수 있습니다. 이 카드는 시음 대화를 돕는 정보입니다. 특정 상품 추천, 적합도 점수, 구매 가능 여부를 뜻하지 않습니다.</p><a href="/taste-explorer?category={{category_key}}">같은 종류 다시 탐색하기</a></div>{% endif %}{% endif %}</section></main>''' + footer + '''</body></html>'''
     response = app.make_response(render_template_string(markup, categories=TASTE_CATEGORIES,
-        category=category, category_key=category_key, selections=selections, submitted=submitted))
+        category=category, category_key=category_key, selections=selections, submitted=submitted,
+        inferred_style=inferred_style, tied=tied))
     response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -333,4 +368,5 @@ def health():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 

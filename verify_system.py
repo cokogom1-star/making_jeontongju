@@ -7,6 +7,7 @@ Cafe24/Toss/Slack are synthetic adapters: this does NOT certify provider E2E.
 No production DB fallback. Every run creates and drops its own random schema.
 """
 import io
+from itertools import product
 import json
 import os
 import platform
@@ -83,7 +84,7 @@ def main():
             import send_synthetic_orders
             import synthetic_order_history as fulfillment
             import test_orders
-            from app import app
+            from app import app, TASTE_CATEGORIES, infer_taste_style
             app.config.update(TESTING=True)
 
             def response(payload=None, status=200, text='ok'):
@@ -981,12 +982,6 @@ def main():
                         requests.get('https://example.invalid/')
 
                 def test_taste_explorer_four_categories_and_no_provider_access(self):
-                    cases = (
-                        ('whisky', (('fruit', '과일 향 중심'), ('oak', '오크 향 중심'), ('smoke', '스모키한 방향')), 'light', 'clean', 7),
-                        ('soju-traditional', (('clear', '맑은 술'), ('takju', '탁주'), ('distilled', '증류식 소주')), 'soft', 'dry', 7),
-                        ('beer', (('lager', '라거'), ('wheat', '밀맥주'), ('ipa', 'IPA'), ('stout', '스타우트')), 'full', 'crisp', 8),
-                        ('wine', (('white', '화이트 와인'), ('red', '레드 와인'), ('sparkling', '스파클링 와인')), 'light', 'round', 7),
-                    )
                     with patch('app.products_for_page', side_effect=AssertionError('catalog accessed')), patch.object(
                             cafe24, 'database', side_effect=AssertionError('database accessed')):
                         landing = self.get('/taste-explorer')
@@ -994,37 +989,64 @@ def main():
                         self.assertIn('위스키', landing.get_data(as_text=True))
                         self.assertIn('와인', landing.get_data(as_text=True))
                         self.assertIn('href="/taste-explorer"', self.get('/about').get_data(as_text=True))
-                        for category, styles, body, finish, radio_count in cases:
-                            form = self.get('/taste-explorer', query_string={'category': category})
+                        all_styles = set()
+                        for category_key, category in TASTE_CATEGORIES.items():
+                            form = self.get('/taste-explorer', query_string={'category': category_key})
                             self.assertEqual(form.status_code, 200)
                             form_text = form.get_data(as_text=True)
                             self.assertIn('<fieldset>', form_text)
                             self.assertIn('action="/taste-explorer#taste-result"', form_text)
+                            self.assertIn(' → '.join(style[0] for style in category['styles']), form_text)
+                            self.assertNotIn('name="style"', form_text)
+                            radio_count = sum(len(options) for _, _, options in category['questions'])
                             self.assertEqual(form_text.count('type="radio"'), radio_count)
                             self.assertEqual(form_text.count('required'), radio_count)
-                            for style, label in styles:
-                                page = self.get('/taste-explorer', query_string={
-                                    'category': category, 'style': style, 'body': body, 'finish': finish})
+                            self.assertEqual(form_text.count('<fieldset>'), 3)
+                            seen = set()
+                            tie_count = 0
+                            for answers in product(*(tuple(option[0] for option in options)
+                                                     for _, _, options in category['questions'])):
+                                params = {'category': category_key, **dict(zip(('aroma', 'body', 'finish'), answers))}
+                                expected, tied = infer_taste_style(category, answers)
+                                page = self.get('/taste-explorer', query_string=params)
                                 self.assertEqual(page.status_code, 200)
                                 self.assertEqual(page.headers['Cache-Control'], 'no-store')
                                 result = page.get_data(as_text=True).split('id="taste-result"', 1)[1].split('</div>', 1)[0]
                                 self.assertIn('role="region"', result)
                                 self.assertIn('tabindex="-1"', result)
-                                self.assertIn('스타일: ' + label, result)
+                                self.assertIn('먼저 탐색할 ' + category['name'] + ' 스타일: ' + expected[0], result)
+                                self.assertIn(expected[1], result)
+                                self.assertEqual('여러 스타일이 같은 개수로 겹쳐' in result, tied)
+                                tie_count += tied
                                 self.assertIn('특정 상품 추천, 적합도 점수, 구매 가능 여부를 뜻하지 않습니다.', result)
                                 self.assertNotIn('href="/products', result)
+                                self.assertNotIn('%', result)
+                                seen.add(expected[0])
+                                self.assertEqual(infer_taste_style(category, answers), (expected, tied))
+                            self.assertEqual(seen, {style[0] for style in category['styles']})
+                            self.assertGreater(tie_count, 0)
+                            for style in category['styles']:
+                                self.assertEqual(infer_taste_style(category, style[2]), (style, False))
+                            all_styles.update(seen)
+                        self.assertEqual(len(all_styles), 13)
+                        # Three beer profiles tie on two choices; declared order selects lager.
+                        tied_page = self.get('/taste-explorer', query_string={
+                            'category': 'beer', 'aroma': 'fruit', 'body': 'light', 'finish': 'crisp'})
+                        self.assertIn('스타일: 라거', tied_page.get_data(as_text=True))
+                        self.assertIn('여러 스타일이 같은 개수로 겹쳐', tied_page.get_data(as_text=True))
 
                 def test_taste_explorer_rejects_ambiguous_or_invalid_answers(self):
                     invalid = (
                         '/taste-explorer?category=unknown',
-                        '/taste-explorer?category=beer&style=ipa',
-                        '/taste-explorer?category=beer&style=invalid&body=light&finish=crisp',
-                        '/taste-explorer?category=beer&style=ipa&style=lager&body=light&finish=crisp',
-                        '/taste-explorer?category=beer&category=wine&style=ipa&body=light&finish=crisp',
-                        '/taste-explorer?category=beer&style=ipa&body=light&body=full&finish=crisp',
-                        '/taste-explorer?category=beer&style=ipa&body=light&finish=crisp&finish=crisp',
-                        '/taste-explorer?category=beer&style=ipa&body=light&finish=crisp&extra=1',
-                        '/taste-explorer?style=ipa&body=light&finish=crisp',
+                        '/taste-explorer?category=beer&aroma=fruit',
+                        '/taste-explorer?category=beer&aroma=invalid&body=light&finish=crisp',
+                        '/taste-explorer?category=beer&aroma=fruit&aroma=fruit&body=light&finish=crisp',
+                        '/taste-explorer?category=beer&category=wine&aroma=fruit&body=light&finish=crisp',
+                        '/taste-explorer?category=beer&aroma=fruit&body=light&body=full&finish=crisp',
+                        '/taste-explorer?category=beer&aroma=fruit&body=light&finish=crisp&finish=crisp',
+                        '/taste-explorer?category=beer&aroma=fruit&body=light&finish=crisp&extra=1',
+                        '/taste-explorer?category=beer&aroma=fruit&body=light&finish=crisp&style=ipa',
+                        '/taste-explorer?aroma=fruit&body=light&finish=crisp',
                     )
                     for path in invalid:
                         page = self.get(path)
@@ -1078,4 +1100,5 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
 
