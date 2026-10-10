@@ -91,26 +91,40 @@ followed by a successful main check before deploy.
 
 ## Taste explorer
 
-The public `/taste-explorer` page provides four editorial paths: whisky,
-soju/traditional liquor, beer and wine. Each has three native-radio sensory
-questions (aroma, body, finish); visitors do not select a style directly.
-An ordered, category-specific profile table counts how many of the three
-answers overlap each named style, shows the first style with the most overlaps,
-and discloses the fixed editorial order when there is a tie. All 13 detailed
-styles remain reachable: whisky (fruit, oak, smoky), traditional liquor
-(clear rice wine, takju, distilled soju), beer (lager, wheat beer, IPA, stout),
-and wine (white, red, sparkling). The result explains the style and repeats
-the chosen sensory terms. It is a vocabulary and comparison exercise, not a
-personality diagnosis, measured compatibility score or product recommendation.
-It does not read or write a database, request a provider, or expose a purchase
-action in the result. The GET query has a finite allowlist; incomplete,
-duplicate (even identical duplicate), unknown, or out-of-range answers return
-a 400 page with a restart link. Answers remain in the user's URL/history after
-submission, so this feature does not claim private or persistent profile
-storage. The Flask verifier exhaustively checks every possible answer tuple,
-all 13 style results, tie handling, invalid inputs, native controls and
-absence of catalog/database access; a real browser accessibility pass is still
-separate.
+The public `/taste-explorer` now opens directly on one seven-question native radio form.
+A visitor chooses an aroma, sweetness, body, acidity, bitterness, texture and
+finish without first selecting a drink category. The GET response considers
+28 editorial style archetypes across whisky, beer, wine and Korean traditional
+liquor (seven per group). These are named styles and typical sensory directions,
+not actual stocked products or guaranteed tasting notes. The examples explain
+what to compare and distinguish neighboring styles, including bourbon, rye,
+sherry-cask and peated whisky; pilsner, wheat beer, IPA, stout and porter;
+Chardonnay, Sauvignon Blanc, Pinot Noir, Cabernet, Riesling and sparkling wine;
+and cheongju/yakju, takju, makgeolli and distilled soju.
+
+`rank_taste_styles` counts exact overlaps with each seven-feature editorial
+profile: aroma weighs three, sweetness/body/acidity/bitterness/texture two
+apiece, finish one. Every candidate is ranked globally; equal scores use a
+stable style identifier order only for display. The result shows the first
+three with matched answer labels, character, an observation prompt and a
+comparison. If the leading score ties for more than three styles, the entire
+leading tie group is shown. A tie at the three-card cutoff is disclosed, as
+are ties on each displayed card. This is a transparent browsing aid, not a
+percentage, measured compatibility claim or purchase recommendation. It has
+no database or provider dependency and provides no result purchase action.
+
+The route accepts either an empty GET or exactly one answer for every question
+from the finite option allowlist. Partial, duplicate (including identical),
+unknown, old category or style parameters return a 400 recovery page. It uses
+native fieldset/legend/radio controls, retained choices after GET, a landmarked
+result and a mobile single-column layout. Answer values appear in the URL and
+browser history; there is no profile persistence. The verifier adds independent
+golden examples and exhaustive coverage of all 1,296 answer tuples, proving
+all 28 styles can lead at least once, plus no-provider and invalid-input
+checks. Local standalone smoke checks passed for all tuples, results, ties,
+invalid inputs and mocked provider/database access. The full PostgreSQL
+verifier requires an explicit disposable `VERIFY_DATABASE_URL`; none was
+available in this workspace. A browser accessibility pass remains separate.
 
 ## Remaining product work
 
