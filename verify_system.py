@@ -11,6 +11,7 @@ from itertools import product
 import json
 import os
 import platform
+import re
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from threading import Barrier
@@ -480,6 +481,68 @@ def main():
                     self.assertNotIn('<b>unsafe</b>', escaped)
                     self.assertNotIn('<img src=x>', escaped)
                     self.assertIn('&lt;b&gt;unsafe&lt;/b&gt;', escaped)
+
+                def test_synthetic_tracking_html_transition_controls(self):
+                    self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        order_id, csrf = sess['test_order_id'], sess['test_order_csrf']
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    path = f'/admin/orders/test/{order_id}/history?view=html'
+                    page = self.get(path)
+                    self.assertEqual(page.status_code, 200)
+
+                    def form_data(response):
+                        html = response.get_data(as_text=True)
+                        values = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">',
+                                                 html))
+                        self.assertEqual(set(values), {'csrf', 'status', 'expected_version', 'request_key'})
+                        return values
+
+                    initial = form_data(page)
+                    self.assertNotEqual(initial['request_key'], form_data(self.get(path))['request_key'])
+                    self.assertEqual(initial['csrf'], csrf)
+                    self.assertEqual((initial['status'], initial['expected_version']),
+                                     ('TEST_PREPARED', '0'))
+                    self.assertIn('합성 준비 완료', page.get_data(as_text=True))
+                    self.assertEqual(self.post(path, data=dict(initial, csrf='bad')).status_code, 403)
+                    invalid = self.post(path, data=dict(initial, status='TEST_DELIVERED'))
+                    self.assertEqual(invalid.status_code, 409)
+                    self.assertIn('최신 상태 보기', invalid.get_data(as_text=True))
+                    self.assertEqual(fulfillment.history(order_id)['version'], 0)
+                    prepared = self.post(path, data=initial)
+                    self.assertEqual((prepared.status_code, prepared.headers['Location']), (303, path))
+                    self.assertEqual(self.post(path, data=initial).status_code, 303)
+                    stale_form = form_data(self.get(path))
+                    self.assertEqual((stale_form['status'], stale_form['expected_version']),
+                                     ('TEST_SHIPPED', '1'))
+                    self.assertIn('합성 발송 처리', self.get(path).get_data(as_text=True))
+                    stale = self.post(path, data=dict(initial, request_key='stale-form'))
+                    self.assertEqual(stale.status_code, 409)
+                    self.assertIn(path, stale.get_data(as_text=True))
+                    self.assertEqual(self.post(path, data=stale_form).status_code, 303)
+                    shipped_form = form_data(self.get(path))
+                    self.assertEqual((shipped_form['status'], shipped_form['expected_version']),
+                                     ('TEST_DELIVERED', '2'))
+                    self.assertIn('합성 배송 완료', self.get(path).get_data(as_text=True))
+                    self.assertEqual(self.post(path, data=shipped_form).status_code, 303)
+                    final = self.get(path).get_data(as_text=True)
+                    self.assertIn('현재 상태: <strong>TEST_DELIVERED</strong>', final)
+                    self.assertNotIn('name="request_key"', final)
+                    self.assertIn('합성 배송 시연이 완료되었습니다.', final)
+                    self.assertEqual(self.get(path.split('?')[0]).json['version'], 3)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event '
+                                                      'WHERE order_id=%s', (order_id,)).fetchone()[0], 4)
+                    with self.client.session_transaction() as sess:
+                        sess.pop('test_order_csrf')
+                    direct_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(direct_id))
+                    direct_path = f'/admin/orders/test/{direct_id}/history?view=html'
+                    direct = self.get(direct_path)
+                    self.assertEqual(direct.status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        self.assertEqual(form_data(direct)['csrf'], sess['test_order_csrf'])
+                    self.assertEqual(self.post(direct_path, data=form_data(direct)).status_code, 303)
 
                 def test_synthetic_fulfillment_rejects_unknown_and_bad_input_without_writes(self):
                     self.assertEqual(self.get('/admin/orders/test').status_code, 200)
