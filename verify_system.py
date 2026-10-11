@@ -428,6 +428,9 @@ def main():
                     self.assertEqual(created.headers['Location'],
                                      f'/admin/orders/test/{order_id}/history?view=html')
                     path = created.headers['Location']
+                    self.assertEqual(self.client.get(path).status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(path).status_code, 404)
                     with cafe24.database() as conn:
                         before = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
                                        for table in ('ourisul_test_orders', 'ourisul_test_order_state',
@@ -436,6 +439,8 @@ def main():
                     self.assertEqual(page.status_code, 200)
                     self.assertIn(order_id, page.get_data(as_text=True))
                     self.assertIn('TEST_CREATED', page.get_data(as_text=True))
+                    self.assertIn('테스트 Slack 알림 상태: <strong>ready</strong>',
+                                  page.get_data(as_text=True))
                     self.assertIn('name="viewport"', page.get_data(as_text=True))
                     self.assertIn('noindex,nofollow', page.get_data(as_text=True))
                     self.assertEqual(page.headers['Cache-Control'], 'no-store')
@@ -481,6 +486,55 @@ def main():
                     self.assertNotIn('<b>unsafe</b>', escaped)
                     self.assertNotIn('<img src=x>', escaped)
                     self.assertIn('&lt;b&gt;unsafe&lt;/b&gt;', escaped)
+                    with patch.object(notices, 'synthetic_notice_status', return_value={
+                            'state': '<img src=x onerror=alert(1)>'}):
+                        escaped_notice = self.get(path).get_data(as_text=True)
+                    self.assertNotIn('<img src=x onerror=alert(1)>', escaped_notice)
+                    self.assertIn('&lt;img src=x onerror=alert(1)&gt;', escaped_notice)
+
+                def test_synthetic_tracking_html_notice_states_are_read_only(self):
+                    ids = {state: 'TEST-' + secrets.token_hex(16) for state in
+                           ('ready', 'deferred', 'leased', 'delivered', 'missing')}
+                    for order_id in ids.values():
+                        self.assertTrue(test_orders.record_test_order(order_id))
+                    with cafe24.database() as conn:
+                        conn.execute('''UPDATE ourisul_order_notice SET
+                            next_attempt_at = now() + interval '5 minutes'
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['deferred'],))
+                        conn.execute('''UPDATE ourisul_order_notice SET
+                            lease_until = now() + interval '5 minutes'
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['leased'],))
+                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now()
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['delivered'],))
+                        conn.execute('''DELETE FROM ourisul_order_notice
+                            WHERE source = 'synthetic' AND order_id = %s''', (ids['missing'],))
+                        before = conn.execute('''SELECT source, order_id, attempts, delivered_at,
+                            next_attempt_at, lease_until FROM ourisul_order_notice
+                            ORDER BY source, order_id''').fetchall()
+                    with patch.object(requests.sessions.Session, 'request',
+                                      side_effect=AssertionError('Timeline must not use HTTP')) as http_request:
+                        for state, order_id in ids.items():
+                            path = f'/admin/orders/test/{order_id}/history'
+                            page = self.get(path + '?view=html')
+                            self.assertEqual(page.status_code, 200)
+                            self.assertIn(f'테스트 Slack 알림 상태: <strong>{state}</strong>',
+                                          page.get_data(as_text=True))
+                            self.assertNotIn('notice', self.get(path).json)
+                        http_request.assert_not_called()
+                    with cafe24.database() as conn:
+                        after = conn.execute('''SELECT source, order_id, attempts, delivered_at,
+                            next_attempt_at, lease_until FROM ourisul_order_notice
+                            ORDER BY source, order_id''').fetchall()
+                    self.assertEqual(after, before)
+
+                def test_synthetic_tracking_html_uninitialized_notice_table_is_unavailable(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    path = f'/admin/orders/test/{order_id}/history?view=html'
+                    with patch.object(notices, 'synthetic_notice_status', side_effect=ValueError(
+                            'Synthetic order tables are not initialized')):
+                        self.assertEqual(self.get(path).status_code, 503)
+                    self.assertEqual(self.get(path).status_code, 200)
 
                 def test_synthetic_tracking_html_transition_controls(self):
                     self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
