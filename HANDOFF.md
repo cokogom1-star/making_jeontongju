@@ -65,6 +65,15 @@ HTML status/timeline at
 The timeline GET reads state without writing to the database. For each
 nonterminal status it shows one button for the permitted next simulated step,
 with a session CSRF token, expected version and fresh request key. Successful
+HTML timelines also show the exact synthetic notice's read-only outbox state:
+`ready`, `deferred`, `leased`, `delivered`, or `missing`. This uses the same
+backed-ID inspection as `--inspect` without claiming or sending a notice;
+`ready` has not been sent and `delivered` means the outbox recorded delivery,
+not proven Slack receipt. History and notice are read in separate database
+snapshots, so a concurrent sender may change the notice between the two reads.
+An uninitialized notice table returns HTTP 503 rather than claiming a missing
+notice or exposing an internal error.
+The JSON history response is unchanged. Successful
 HTML POSTs reuse the existing atomic transition route and redirect (303) to
 the updated timeline; stale or invalid transitions return a 409 recovery page
 linking to the latest state. The terminal page has no transition button.
