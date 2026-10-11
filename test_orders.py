@@ -51,6 +51,9 @@ TRACKING_HISTORY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8
 <p>관리자 전용 미운영 시연입니다. 실제 주문·배송 정보가 아닙니다.</p>
 <p>주문 ID: <strong>{{history.order_id}}</strong></p>
 <p>현재 상태: <strong>{{history.status}}</strong> (버전 {{history.version}})</p>
+<p>테스트 Slack 알림 상태: <strong>{{notice.state}}</strong></p>
+<small>배송 이력과 알림은 별도 시점에 조회됩니다. ready는 발송 전 대기 상태이며,
+delivered도 대기열의 전송 기록일 뿐 실제 Slack 수신을 보장하지 않습니다.</small>
 <h2>변경 이력</h2><ol>{% for event in history.events %}
 <li>{{event.to_status}}<small>버전 {{event.version}} · {{event.created_at}}</small></li>
 {% endfor %}</ol>{% if next_status %}
@@ -172,7 +175,13 @@ def test_order_history(order_id):
             if not session.get('test_order_csrf'):
                 session['test_order_csrf'] = secrets.token_urlsafe(32)
             next_status = fulfillment.STEPS.get(result['status'])
-            return render_template_string(TRACKING_HISTORY, history=result,
+            try:
+                notice = notices.synthetic_notice_status(database, order_id)
+            except ValueError as exc:
+                if str(exc) != 'Synthetic order tables are not initialized':
+                    raise
+                abort(503)
+            return render_template_string(TRACKING_HISTORY, history=result, notice=notice,
                                           next_status=next_status,
                                           next_label=NEXT_LABELS.get(next_status),
                                           csrf=session['test_order_csrf'],
