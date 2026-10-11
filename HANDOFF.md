@@ -60,15 +60,24 @@ isolated PostgreSQL; actual carrier integration is untested and disabled.
 
 The administrator-only `/admin/orders/test?view=html` page now provides a
 synthetic order creation button and an ID lookup form. Creation redirects to a
-read-only HTML status/timeline at
+HTML status/timeline at
 `/admin/orders/test/<TEST-ID>/history?view=html`; lookup only redirects there.
-The original JSON GET/POST behavior remains the default. HTML lookup is behind
+The timeline GET reads state without writing to the database. For each
+nonterminal status it shows one button for the permitted next simulated step,
+with a session CSRF token, expected version and fresh request key. Successful
+HTML POSTs reuse the existing atomic transition route and redirect (303) to
+the updated timeline; stale or invalid transitions return a 409 recovery page
+linking to the latest state. The terminal page has no transition button.
+The original JSON GET/POST behavior remains the default. HTML lookup and controls are behind
 the existing admin authentication and `SYNTHETIC_ORDER_TEST_ENABLED` gate, and
 uses no-store/no-referrer headers. Invalid, missing, or pre-status-model orders
 return 404 without initializing state on read. This is not a public customer
 tracking service or a real shipping integration. The verifier checks the HTML
-flow, escaping, gate, JSON compatibility, and read-only database behavior with
+flow, escaping, gate, JSON compatibility, GET database behavior, transitions,
+retries and stale forms with
 isolated PostgreSQL; it does not test a live browser or carrier.
+No Slack recipient was found in the available 우리술/Ourisul search, and no actual
+message was sent. Synthetic notices remain scoped to the separately enabled test sender.
 
 ## CI artifact upload runtime
 
