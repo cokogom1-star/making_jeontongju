@@ -25,7 +25,8 @@ font:16px/1.6 system-ui,sans-serif;color:#24221e;background:#f6f2e9}
 h1{font-size:clamp(1.5rem,5vw,2.2rem)}form{display:grid;gap:12px;margin:24px 0}
 input,button{font:inherit;padding:10px;max-width:100%}button{cursor:pointer}
 ol{padding-left:24px}li{padding:8px 0;border-bottom:1px solid #d8d1c4}
-a{color:inherit}small{display:block;color:#625b51}input{width:100%}
+a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid #7b421f;outline-offset:3px}
+small{display:block;color:#625b51}input{width:100%}
 </style>'''
 
 TRACKING_FORM = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -52,8 +53,27 @@ TRACKING_HISTORY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8
 <p>현재 상태: <strong>{{history.status}}</strong> (버전 {{history.version}})</p>
 <h2>변경 이력</h2><ol>{% for event in history.events %}
 <li>{{event.to_status}}<small>버전 {{event.version}} · {{event.created_at}}</small></li>
-{% endfor %}</ol><p><a href="{{url_for('test_orders.create_test_order')}}">다른 합성 주문 조회</a></p>
+{% endfor %}</ol>{% if next_status %}
+<form method="post" action="{{url_for('test_orders.test_order_history', order_id=history.order_id, view='html')}}">
+<input type="hidden" name="csrf" value="{{csrf}}">
+<input type="hidden" name="status" value="{{next_status}}">
+<input type="hidden" name="expected_version" value="{{history.version}}">
+<input type="hidden" name="request_key" value="{{request_key}}">
+<button type="submit">{{next_label}}</button></form>{% else %}
+<p>합성 배송 시연이 완료되었습니다.</p>{% endif %}
+<p><a href="{{url_for('test_orders.create_test_order', view='html')}}">다른 합성 주문 조회</a></p>
 </main></body></html>''')
+
+TRACKING_CONFLICT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>합성 상태 변경 확인 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>합성 상태가 변경되었습니다</h1>
+<p>최신 합성 주문 상태를 확인한 뒤 다시 시도해 주세요.</p>
+<p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">최신 상태 보기</a></p>
+</main></body></html>''')
+
+NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 발송 처리',
+               'TEST_DELIVERED': '합성 배송 완료'}
 
 
 def schema(conn):
@@ -149,7 +169,14 @@ def test_order_history(order_id):
         if result is None:
             abort(404)
         if request.args.get('view') == 'html':
-            return render_template_string(TRACKING_HISTORY, history=result)
+            if not session.get('test_order_csrf'):
+                session['test_order_csrf'] = secrets.token_urlsafe(32)
+            next_status = fulfillment.STEPS.get(result['status'])
+            return render_template_string(TRACKING_HISTORY, history=result,
+                                          next_status=next_status,
+                                          next_label=NEXT_LABELS.get(next_status),
+                                          csrf=session['test_order_csrf'],
+                                          request_key=secrets.token_urlsafe(24))
         return result
     token = session.get('test_order_csrf', '')
     if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
@@ -163,6 +190,12 @@ def test_order_history(order_id):
             abort(404)
         if str(exc) in ('Stale synthetic order version', 'Invalid synthetic status transition',
                         'Request key reused for another status'):
+            if request.args.get('view') == 'html':
+                return render_template_string(TRACKING_CONFLICT, order_id=order_id), 409
             abort(409)
         abort(400)
+    if request.args.get('view') == 'html':
+        return redirect(url_for('test_orders.test_order_history', order_id=order_id,
+                                view='html'), code=303)
     return result
+
