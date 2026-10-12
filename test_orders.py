@@ -27,6 +27,7 @@ input,button{font:inherit;padding:10px;max-width:100%}button{cursor:pointer}
 ol{padding-left:24px}li{padding:8px 0;border-bottom:1px solid #d8d1c4}
 a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid #7b421f;outline-offset:3px}
 small{display:block;color:#625b51}input{width:100%}
+dl{margin:8px 0 20px}dt{font-weight:600}dd{margin:0 0 8px;overflow-wrap:anywhere}
 </style>'''
 
 TRACKING_FORM = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -51,8 +52,18 @@ TRACKING_HISTORY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8
 <p>관리자 전용 미운영 시연입니다. 실제 주문·배송 정보가 아닙니다.</p>
 <p>주문 ID: <strong>{{history.order_id}}</strong></p>
 <p>현재 상태: <strong>{{history.status}}</strong> (버전 {{history.version}})</p>
-<p>테스트 Slack 알림 상태: <strong>{{notice.state}}</strong></p>
-<small>배송 이력과 알림은 별도 시점에 조회됩니다. ready는 발송 전 대기 상태이며,
+<h2>테스트 Slack 알림</h2>
+<dl><dt>상태</dt><dd><strong>{{notice.state}}</strong> ({{notice_label}})</dd>
+{% if notice.attempts is defined and notice.attempts is not none %}
+<dt>발송 작업 시도 횟수</dt><dd>{{notice.attempts}}회 (작업 점유 포함)</dd>{% endif %}
+{% if notice.state == 'deferred' and notice.retry_at is defined and notice.retry_at is not none %}
+<dt>재시도 예정 시각</dt><dd><time datetime="{{notice.retry_at}}">{{notice.retry_at}}</time></dd>{% endif %}
+{% if notice.state == 'leased' and notice.lease_until is defined and notice.lease_until is not none %}
+<dt>발송 점유 만료 시각</dt><dd><time datetime="{{notice.lease_until}}">{{notice.lease_until}}</time></dd>{% endif %}
+{% if notice.state == 'delivered' and notice.delivered_at is defined and notice.delivered_at is not none %}
+<dt>전송 기록 시각</dt><dd><time datetime="{{notice.delivered_at}}">{{notice.delivered_at}}</time></dd>{% endif %}
+</dl>
+<small>시각은 각 값에 표시된 ISO 시간대 오프셋을 따릅니다. 배송 이력과 알림은 별도 시점에 조회됩니다. ready는 발송 전 대기 상태이며,
 delivered도 대기열의 전송 기록일 뿐 실제 Slack 수신을 보장하지 않습니다.</small>
 <h2>변경 이력</h2><ol>{% for event in history.events %}
 <li>{{event.to_status}}<small>버전 {{event.version}} · {{event.created_at}}</small></li>
@@ -77,6 +88,9 @@ TRACKING_CONFLICT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-
 
 NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 발송 처리',
                'TEST_DELIVERED': '합성 배송 완료'}
+NOTICE_LABELS = {'ready': '발송 대기', 'deferred': '재시도 대기',
+                 'leased': '발송 작업 점유 중', 'delivered': '전송 기록 완료',
+                 'missing': '알림 기록 없음'}
 
 
 def schema(conn):
@@ -182,6 +196,8 @@ def test_order_history(order_id):
                     raise
                 abort(503)
             return render_template_string(TRACKING_HISTORY, history=result, notice=notice,
+                                          notice_label=NOTICE_LABELS.get(notice.get('state'),
+                                                                         '알 수 없는 상태'),
                                           next_status=next_status,
                                           next_label=NEXT_LABELS.get(next_status),
                                           csrf=session['test_order_csrf'],
