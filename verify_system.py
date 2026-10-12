@@ -439,7 +439,7 @@ def main():
                     self.assertEqual(page.status_code, 200)
                     self.assertIn(order_id, page.get_data(as_text=True))
                     self.assertIn('TEST_CREATED', page.get_data(as_text=True))
-                    self.assertIn('테스트 Slack 알림 상태: <strong>ready</strong>',
+                    self.assertIn('<dt>상태</dt><dd><strong>ready</strong> (발송 대기)</dd>',
                                   page.get_data(as_text=True))
                     self.assertIn('name="viewport"', page.get_data(as_text=True))
                     self.assertIn('noindex,nofollow', page.get_data(as_text=True))
@@ -491,6 +491,20 @@ def main():
                         escaped_notice = self.get(path).get_data(as_text=True)
                     self.assertNotIn('<img src=x onerror=alert(1)>', escaped_notice)
                     self.assertIn('&lt;img src=x onerror=alert(1)&gt;', escaped_notice)
+                    self.assertIn('알 수 없는 상태', escaped_notice)
+                    self.assertNotIn('발송 작업 시도 횟수', escaped_notice)
+                    with patch.object(notices, 'synthetic_notice_status', return_value={
+                            'state': 'deferred', 'attempts': '<b>2</b>',
+                            'retry_at': '2026-10-12T01:00:00+00:00" onmouseover="alert(1)'}):
+                        escaped_metadata = self.get(path).get_data(as_text=True)
+                    self.assertNotIn('<b>2</b>', escaped_metadata)
+                    self.assertIn('&lt;b&gt;2&lt;/b&gt;', escaped_metadata)
+                    self.assertNotIn('onmouseover="alert(1)"', escaped_metadata)
+                    self.assertIn('onmouseover=&#34;alert(1)', escaped_metadata)
+                    with patch.object(notices, 'synthetic_notice_status', return_value={
+                            'state': 'deferred'}):
+                        incomplete = self.get(path).get_data(as_text=True)
+                    self.assertNotIn('재시도 예정 시각', incomplete)
 
                 def test_synthetic_tracking_html_notice_states_are_read_only(self):
                     ids = {state: 'TEST-' + secrets.token_hex(16) for state in
@@ -499,26 +513,48 @@ def main():
                         self.assertTrue(test_orders.record_test_order(order_id))
                     with cafe24.database() as conn:
                         conn.execute('''UPDATE ourisul_order_notice SET
-                            next_attempt_at = now() + interval '5 minutes'
+                            next_attempt_at = now() + interval '5 minutes', attempts = 2
                             WHERE source = 'synthetic' AND order_id = %s''', (ids['deferred'],))
                         conn.execute('''UPDATE ourisul_order_notice SET
-                            lease_until = now() + interval '5 minutes'
+                            lease_until = now() + interval '5 minutes', attempts = 3
                             WHERE source = 'synthetic' AND order_id = %s''', (ids['leased'],))
-                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now()
+                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now(), attempts = 4
                             WHERE source = 'synthetic' AND order_id = %s''', (ids['delivered'],))
                         conn.execute('''DELETE FROM ourisul_order_notice
                             WHERE source = 'synthetic' AND order_id = %s''', (ids['missing'],))
                         before = conn.execute('''SELECT source, order_id, attempts, delivered_at,
                             next_attempt_at, lease_until FROM ourisul_order_notice
                             ORDER BY source, order_id''').fetchall()
+                    labels = {'ready': '발송 대기', 'deferred': '재시도 대기',
+                              'leased': '발송 작업 점유 중', 'delivered': '전송 기록 완료',
+                              'missing': '알림 기록 없음'}
+                    times = {'deferred': ('재시도 예정 시각', 'retry_at'),
+                             'leased': ('발송 점유 만료 시각', 'lease_until'),
+                             'delivered': ('전송 기록 시각', 'delivered_at')}
                     with patch.object(requests.sessions.Session, 'request',
                                       side_effect=AssertionError('Timeline must not use HTTP')) as http_request:
                         for state, order_id in ids.items():
                             path = f'/admin/orders/test/{order_id}/history'
                             page = self.get(path + '?view=html')
                             self.assertEqual(page.status_code, 200)
-                            self.assertIn(f'테스트 Slack 알림 상태: <strong>{state}</strong>',
-                                          page.get_data(as_text=True))
+                            html = page.get_data(as_text=True)
+                            self.assertIn(f'<dt>상태</dt><dd><strong>{state}</strong> '
+                                          f'({labels[state]})</dd>', html)
+                            self.assertIn('name="viewport"', html)
+                            self.assertIn('focus-visible', html)
+                            if state == 'missing':
+                                self.assertNotIn('발송 작업 시도 횟수', html)
+                            else:
+                                expected = {'ready': 0, 'deferred': 2, 'leased': 3,
+                                            'delivered': 4}[state]
+                                self.assertIn(f'<dt>발송 작업 시도 횟수</dt><dd>{expected}회 (작업 점유 포함)</dd>', html)
+                            inspected = notices.synthetic_notice_status(cafe24.database, order_id)
+                            for candidate, (label, key) in times.items():
+                                if state == candidate:
+                                    self.assertIn(f'<dt>{label}</dt><dd><time datetime="'
+                                                  f'{inspected[key]}">{inspected[key]}</time></dd>', html)
+                                else:
+                                    self.assertNotIn(label, html)
                             self.assertNotIn('notice', self.get(path).json)
                         http_request.assert_not_called()
                     with cafe24.database() as conn:

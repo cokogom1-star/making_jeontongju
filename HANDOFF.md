@@ -71,6 +71,16 @@ backed-ID inspection as `--inspect` without claiming or sending a notice;
 `ready` has not been sent and `delivered` means the outbox recorded delivery,
 not proven Slack receipt. History and notice are read in separate database
 snapshots, so a concurrent sender may change the notice between the two reads.
+The page pairs each raw state with a Korean explanation and shows the already
+retrieved worker attempt count when present. Attempts include queue claims
+before an HTTP request, and `leased` means task ownership until expiry rather
+than proven active processing. It shows only the timestamp relevant to
+the current state: `retry_at` for deferred, `lease_until` for leased, and
+`delivered_at` for delivered. Missing or absent fields produce no fabricated
+count or time. Timestamps keep their ISO timezone offsets rather than inventing
+a local timezone. A labeled description list and `<time>` elements keep these
+details readable on narrow screens and understandable to assistive technology;
+template autoescaping applies to status and timestamp text and attributes.
 An uninitialized notice table returns HTTP 503 rather than claiming a missing
 notice or exposing an internal error.
 The JSON history response is unchanged. Successful
