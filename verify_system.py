@@ -526,7 +526,7 @@ def main():
                             next_attempt_at, lease_until FROM ourisul_order_notice
                             ORDER BY source, order_id''').fetchall()
                     labels = {'ready': '발송 대기', 'deferred': '재시도 대기',
-                              'leased': '발송 처리 중', 'delivered': '전송 기록 완료',
+                              'leased': '발송 작업 점유 중', 'delivered': '전송 기록 완료',
                               'missing': '알림 기록 없음'}
                     times = {'deferred': ('재시도 예정 시각', 'retry_at'),
                              'leased': ('발송 점유 만료 시각', 'lease_until'),
