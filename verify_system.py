@@ -23,6 +23,7 @@ import traceback
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock, patch
+from werkzeug.datastructures import MultiDict
 
 
 def main():
@@ -108,6 +109,7 @@ def main():
                         test_orders.schema(conn)
                         fulfillment.schema(conn)
                         conn.execute('TRUNCATE ourisul_cafe24_token, ourisul_test_payments, '
+                                     'ourisul_test_order_item, '
                                      'ourisul_test_order_event, ourisul_test_order_state, '
                                      'ourisul_test_orders, ourisul_order_notice')
                         cafe24.save_token(conn, {'access_token': 'synthetic-access',
@@ -351,9 +353,11 @@ def main():
                     order_id = 'TEST-' + secrets.token_hex(16)
                     try:
                         with self.assertRaises(psycopg.errors.CheckViolation):
-                            test_orders.record_test_order(order_id)
+                            test_orders.record_test_order(order_id, scenario={'SYNTHETIC-CHEONGJU': 1})
                         with cafe24.database() as conn:
                             self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_orders '
+                                                          'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
+                            self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_item '
                                                           'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
                             self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_order_notice '
                                                           'WHERE order_id=%s', (order_id,)).fetchone()[0], 0)
@@ -364,6 +368,110 @@ def main():
                     finally:
                         with cafe24.database() as conn:
                             conn.execute('ALTER TABLE ourisul_order_notice DROP CONSTRAINT no_synthetic')
+
+                def test_synthetic_scenario_persists_atomically_and_replays_exact_payload(self):
+                    path = '/admin/orders/test?view=html'
+                    self.assertEqual(self.client.get(path).status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(path).status_code, 404)
+                    form = self.get(path)
+                    self.assertIn('SYNTHETIC-CHEONGJU', form.get_data(as_text=True))
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                        scenario_id = sess['test_scenario_order_id']
+                        legacy_id = sess['test_order_id']
+                    data = {'csrf': csrf, 'scenario': 'fixed-v1',
+                            'SYNTHETIC-CHEONGJU': '2', 'SYNTHETIC-TAKJU': '1'}
+                    self.assertEqual(self.post(path, data=dict(data, csrf='bad')).status_code, 403)
+                    for bad in (dict(data, **{'SYNTHETIC-TAKJU': '11'}),
+                                dict(data, **{'SYNTHETIC-TAKJU': '-1'}),
+                                dict(data, **{'SYNTHETIC-TAKJU': '0', 'SYNTHETIC-CHEONGJU': '0'}),
+                                dict(data, extra='bad'),
+                                {key: value for key, value in data.items() if key != 'SYNTHETIC-TAKJU'}):
+                        self.assertEqual(self.post(path, data=bad).status_code, 400)
+                    duplicate = MultiDict(list(data.items()) + [('SYNTHETIC-CHEONGJU', '2')])
+                    self.assertEqual(self.post(path, data=duplicate).status_code, 400)
+                    self.assertEqual(self.post(path, data=MultiDict(list(data.items()) +
+                                    [('csrf', csrf)])).status_code, 400)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_orders').fetchone()[0], 0)
+                    created = self.post(path, data=data)
+                    self.assertEqual((created.status_code, created.headers['Location']),
+                                     (303, f'/admin/orders/test/{scenario_id}/history?view=html'))
+                    self.assertEqual(self.post(path, data=data).status_code, 303)
+                    self.assertEqual(self.post(path, data=dict(data, **{'SYNTHETIC-CHEONGJU': '3'})).status_code, 409)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT order_id, status, item_count FROM ourisul_test_orders').fetchall(),
+                                         [(scenario_id, 'TEST_CREATED', 0)])
+                        self.assertEqual(conn.execute('SELECT item_id, item_label, quantity FROM ourisul_test_order_item '
+                                                      'ORDER BY item_id').fetchall(),
+                                         [('SYNTHETIC-CHEONGJU', '가상 청주', 2),
+                                          ('SYNTHETIC-TAKJU', '가상 탁주', 1)])
+                        self.assertEqual(conn.execute('SELECT order_id, item_count FROM ourisul_order_notice').fetchall(),
+                                         [(scenario_id, 0)])
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_state').fetchone()[0], 1)
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 1)
+                    history = self.get(created.headers['Location'])
+                    self.assertIn('가상 청주', history.get_data(as_text=True))
+                    self.assertIn('가상 탁주', history.get_data(as_text=True))
+                    self.assertNotIn('가상 청주', self.get('/').get_data(as_text=True))
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_order_notice', 'ourisul_test_order_state',
+                              'ourisul_test_order_event')
+                    with cafe24.database() as conn:
+                        before = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                  for table in tables}
+                    self.get(created.headers['Location'])
+                    with cafe24.database() as conn:
+                        after = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                 for table in tables}
+                        self.assertEqual(after, before)
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_orders '
+                                                      'WHERE order_id=%s', (legacy_id,)).fetchone()[0], 0)
+                    history_path = f'/admin/orders/test/{scenario_id}/history'
+                    for expected, version in (('TEST_PREPARED', 0), ('TEST_SHIPPED', 1),
+                                              ('TEST_DELIVERED', 2)):
+                        advanced = self.post(history_path, data={'csrf': csrf, 'status': expected,
+                            'expected_version': str(version), 'request_key': f'scenario-{version}'})
+                        self.assertEqual(advanced.status_code, 200)
+                    self.assertIn('TEST_DELIVERED', self.get(created.headers['Location']).get_data(as_text=True))
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('SELECT item_id, quantity FROM ourisul_test_order_item '
+                                                      'ORDER BY item_id').fetchall(),
+                                         [('SYNTHETIC-CHEONGJU', 2), ('SYNTHETIC-TAKJU', 1)])
+                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event '
+                                                      'WHERE order_id=%s', (scenario_id,)).fetchone()[0], 4)
+                        self.assertEqual(conn.execute('SELECT item_count FROM ourisul_order_notice '
+                                                      'WHERE order_id=%s', (scenario_id,)).fetchone()[0], 0)
+                        conn.execute('DROP TABLE ourisul_test_order_item')
+                    self.assertEqual(self.get(created.headers['Location']).status_code, 503)
+
+                def test_synthetic_scenario_item_failure_rolls_back_everything(self):
+                    self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf, order_id = sess['test_order_csrf'], sess['test_scenario_order_id']
+                    with cafe24.database() as conn:
+                        conn.execute("ALTER TABLE ourisul_test_order_item ADD CONSTRAINT reject_scenario "
+                                     "CHECK (item_id <> 'SYNTHETIC-CHEONGJU')")
+                    try:
+                        direct_id = 'TEST-' + secrets.token_hex(16)
+                        with self.assertRaises(psycopg.errors.CheckViolation):
+                            test_orders.record_test_order(
+                                direct_id, scenario={'SYNTHETIC-CHEONGJU': 1})
+                        failed = self.post('/admin/orders/test?view=html', data={
+                            'csrf': csrf, 'scenario': 'fixed-v1',
+                            'SYNTHETIC-CHEONGJU': '1', 'SYNTHETIC-TAKJU': '0'})
+                        self.assertEqual(failed.status_code, 502)
+                        with cafe24.database() as conn:
+                            for table in ('ourisul_test_orders', 'ourisul_test_order_item',
+                                          'ourisul_order_notice', 'ourisul_test_order_state',
+                                          'ourisul_test_order_event'):
+                                for checked_id in (direct_id, order_id):
+                                    self.assertEqual(conn.execute(f'SELECT count(*) FROM {table} '
+                                                                  'WHERE order_id=%s', (checked_id,)).fetchone()[0], 0)
+                    finally:
+                        with cafe24.database() as conn:
+                            conn.execute('ALTER TABLE ourisul_test_order_item DROP CONSTRAINT reject_scenario')
 
                 def test_synthetic_fulfillment_auth_gate_history_and_idempotency(self):
                     self.assertEqual(self.get('/admin/orders/test').status_code, 200)
@@ -787,8 +895,9 @@ def main():
                         for old_post_succeeds in (True, False):
                             with self.subTest(old_post_succeeds=old_post_succeeds):
                                 with cafe24.database() as conn:
-                                    conn.execute('TRUNCATE ourisul_test_order_event, ourisul_test_order_state, '
-                                                 'ourisul_test_orders, ourisul_order_notice')
+                                    conn.execute('TRUNCATE ourisul_test_order_item, ourisul_test_order_event, '
+                                                 'ourisul_test_order_state, ourisul_test_orders, '
+                                                 'ourisul_order_notice')
                                 order_id = 'TEST-' + secrets.token_hex(16)
                                 self.assertTrue(test_orders.record_test_order(order_id))
 
