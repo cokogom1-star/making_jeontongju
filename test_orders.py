@@ -35,6 +35,16 @@ TRACKING_FORM = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="robots" content="noindex,nofollow"><title>합성 주문 조회 | 우리술</title>'''
     + TRACKING_STYLE + '''</head><body><main><h1>합성 주문 배송 조회</h1>
 <p>관리자 전용 미운영 시연입니다. 실제 주문·배송 정보가 아닙니다.</p>
+<section aria-labelledby="pending-heading">
+<h2 id="pending-heading">테스트 Slack 미전송 알림</h2>
+<p>합성 주문에 연결된 미전송 알림의 현재 집계입니다. 조회만 하며 발송하지 않습니다.</p>
+<dl>
+<dt>발송 대기 (ready)</dt><dd>{{pending.ready}}건</dd>
+<dt>재시도 대기 (deferred)</dt><dd>{{pending.deferred}}건</dd>
+<dt>발송 작업 점유 중 (leased)</dt><dd>{{pending.leased}}건</dd>
+<dt>미전송 합계 (total)</dt><dd>{{pending.total}}건</dd>
+</dl>
+</section>
 <form method="get" action="{{url_for('test_orders.lookup_test_order')}}">
 <label for="order_id">합성 주문 ID</label>
 <input id="order_id" name="order_id" required autocomplete="off"
@@ -145,7 +155,14 @@ def create_test_order():
         session['test_order_csrf'] = secrets.token_urlsafe(32)
         session['test_order_id'] = 'TEST-' + secrets.token_hex(16)
         if request.args.get('view') == 'html':
-            return render_template_string(TRACKING_FORM, csrf=session['test_order_csrf'])
+            try:
+                pending = notices.synthetic_pending_counts(database)
+            except ValueError as exc:
+                if str(exc) != 'Synthetic order tables are not initialized':
+                    raise
+                abort(503)
+            return render_template_string(TRACKING_FORM, csrf=session['test_order_csrf'],
+                                          pending=pending)
         return render_template_string('''<!doctype html><html lang="ko"><meta charset="utf-8">
 <meta name="robots" content="noindex,nofollow"><title>합성 주문 테스트</title>
 <h1>합성 주문 테스트</h1><p>고객·상품·결제·배송이 없는 테스트 주문을 DB에 저장합니다.
