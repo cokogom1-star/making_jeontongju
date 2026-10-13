@@ -1,5 +1,30 @@
 # Handoff
 
+## Fictional basket rehearsal
+
+The administrator-only `/admin/orders/test?view=html` page has a separate
+fictional basket form with two fixed `SYNTHETIC-*` fixtures. Each accepts a
+whole-number quantity from 0 to 10, with at least one positive quantity.
+This form uses its own session order ID and the existing CSRF token. The exact
+fixture IDs, labels and positive quantities are saved in
+`ourisul_test_order_item` in the same transaction as the zero-item synthetic
+transport order, ID-only synthetic notice, and initial status event. The
+original zero-item admin form and JSON response remain available. A retry
+with the same ID and quantities is idempotent; a changed basket conflicts.
+Missing, duplicate, unknown and malformed form fields are rejected. The
+HTML history displays the saved labels and quantities without updating them;
+a missing item table returns 503 rather than claiming the order had no items.
+The table is initialized on the first synthetic write. Existing orders do not
+receive an automatic production backfill.
+
+These fixtures have no stock, price, customer, payment, or carrier connection.
+The legacy order and notice `item_count` remain zero, and the regular Slack
+worker still ignores synthetic notices. The isolated PostgreSQL verifier has
+new checks for form validation, exact replay, changed-basket conflicts,
+read-only history, status transitions, and transaction rollback. Full verifier
+and provider connectivity results must be recorded separately for the exact
+revision being reviewed.
+
 ## Synthetic order and Slack notice
 
 The admin-only `/admin/orders/test` flow stores a zero-item synthetic order and
