@@ -40,6 +40,22 @@ does not establish real Slack connectivity or channel routing.
 
 ## Synthetic order status and delivery rehearsal
 
+The administrator-only `/admin/orders/test?view=html` now also shows a
+read-only snapshot of backed, undelivered synthetic Slack notices: `ready`,
+`deferred`, `leased`, and `total`. It uses the same aggregate query as
+`send_synthetic_orders.py --pending`; an active lease takes precedence over a
+future retry, and delivered, unbacked, malformed-ID, and real-channel notices
+are excluded. The section uses a heading and description list for narrow
+screens and assistive technology. It has no send action and makes no HTTP
+request or database mutation. Existing admin protection, the
+`SYNTHETIC_ORDER_TEST_ENABLED` gate, and no-store/no-referrer headers remain.
+An uninitialized notice or test-order table yields HTTP 503 on this HTML GET.
+The default `/admin/orders/test` response and JSON history remain unchanged.
+The isolated PostgreSQL verifier checks exact counts, full rows in all four
+synthetic-order/notice tables before and after GET, zero HTTP requests,
+default response compatibility, the gate, and a missing-table 503. It does
+not establish real Slack delivery.
+
 New synthetic orders also create `ourisul_test_order_state` and an initial
 `ourisul_test_order_event` in the same transaction as the test order and notice.
 An administrator can read `GET /admin/orders/test/<TEST-ID>/history` without
