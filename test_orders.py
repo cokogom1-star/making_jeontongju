@@ -53,6 +53,14 @@ pattern="TEST-[0-9a-f]{32}" placeholder="TEST-…">
 <form method="post" action="{{url_for('test_orders.create_test_order', view='html')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
 <button type="submit">새 합성 주문 기록</button></form>
+<section aria-labelledby="scenario-heading"><h2 id="scenario-heading">가상 품목 수량 기록</h2>
+<p>관리자 전용 가상 장바구니입니다. 실제 판매 상품·재고·가격·결제·배송과 연결되지 않습니다.</p>
+<form method="post" action="{{url_for('test_orders.create_test_order', view='html')}}">
+<input type="hidden" name="csrf" value="{{csrf}}">
+<input type="hidden" name="scenario" value="fixed-v1">
+<label>가상 청주 <input type="number" name="SYNTHETIC-CHEONGJU" min="0" max="10" step="1" value="1" required></label>
+<label>가상 탁주 <input type="number" name="SYNTHETIC-TAKJU" min="0" max="10" step="1" value="0" required></label>
+<button type="submit">가상 수량 기록하고 추적하기</button></form></section>
 </main></body></html>''')
 
 TRACKING_HISTORY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -62,6 +70,9 @@ TRACKING_HISTORY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8
 <p>관리자 전용 미운영 시연입니다. 실제 주문·배송 정보가 아닙니다.</p>
 <p>주문 ID: <strong>{{history.order_id}}</strong></p>
 <p>현재 상태: <strong>{{history.status}}</strong> (버전 {{history.version}})</p>
+<h2>가상 품목 기록</h2>{% if scenario_items %}<ul>{% for item in scenario_items %}
+<li>{{item.name}} ({{item.id}}) · {{item.quantity}}개</li>{% endfor %}</ul>{% else %}
+<p>가상 품목 없음 (기존 0개 합성 주문)</p>{% endif %}
 <h2>테스트 Slack 알림</h2>
 <dl><dt>상태</dt><dd><strong>{{notice.state}}</strong> ({{notice_label}})</dd>
 {% if notice.attempts is defined and notice.attempts is not none %}
@@ -101,6 +112,38 @@ NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 
 NOTICE_LABELS = {'ready': '발송 대기', 'deferred': '재시도 대기',
                  'leased': '발송 작업 점유 중', 'delivered': '전송 기록 완료',
                  'missing': '알림 기록 없음'}
+SCENARIO_ITEMS = {'SYNTHETIC-CHEONGJU': '가상 청주', 'SYNTHETIC-TAKJU': '가상 탁주'}
+
+
+def parse_scenario(form):
+    """Accept the exact two fixture fields from the protected admin form."""
+    keys = set(form.keys())
+    if any(len(form.getlist(key)) != 1 for key in keys):
+        raise ValueError('Duplicate synthetic scenario field')
+    if keys == {'csrf'}:
+        return None  # Preserve the older zero-item admin form.
+    if keys != {'csrf', 'scenario', *SCENARIO_ITEMS} or form['scenario'] != 'fixed-v1':
+        raise ValueError('Invalid synthetic scenario fields')
+    quantities = {}
+    for item_id in SCENARIO_ITEMS:
+        raw = form[item_id]
+        if not re.fullmatch(r'(?:0|[1-9]|10)', raw):
+            raise ValueError('Invalid synthetic scenario quantity')
+        if int(raw):
+            quantities[item_id] = int(raw)
+    if not quantities:
+        raise ValueError('Empty synthetic scenario')
+    return quantities
+
+
+def validated_scenario(scenario):
+    if scenario is None:
+        return None
+    if (not isinstance(scenario, dict) or not scenario
+            or any(item not in SCENARIO_ITEMS or type(qty) is not int or not 1 <= qty <= 10
+                   for item, qty in scenario.items())):
+        raise ValueError('Invalid synthetic scenario')
+    return scenario
 
 
 def schema(conn):
@@ -110,28 +153,55 @@ def schema(conn):
         item_count INTEGER NOT NULL CHECK (item_count = 0),
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS ourisul_test_order_item (
+        order_id TEXT NOT NULL REFERENCES ourisul_test_orders(order_id),
+        item_id TEXT NOT NULL CHECK (item_id IN ('SYNTHETIC-CHEONGJU', 'SYNTHETIC-TAKJU')),
+        item_label TEXT NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity BETWEEN 1 AND 10),
+        PRIMARY KEY (order_id, item_id)
+    )''')
 
 
-def record_test_order(order_id, connect=database):
+def record_test_order(order_id, connect=database, scenario=None):
     """Save an empty synthetic order and its notice in one transaction.
 
     Repeating an ID returns False without creating another order or notice.
     """
     if not isinstance(order_id, str) or not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id):
         raise ValueError('Invalid synthetic order ID')
+    scenario = validated_scenario(scenario)
     with connect() as conn:
         schema(conn)
         notices.schema(conn)
         result = conn.execute('''INSERT INTO ourisul_test_orders (order_id, status, item_count)
             VALUES (%s, 'TEST_CREATED', 0) ON CONFLICT (order_id) DO NOTHING''', (order_id,))
         if result.rowcount:
+            for item_id, quantity in (scenario or {}).items():
+                conn.execute('''INSERT INTO ourisul_test_order_item (order_id, item_id, item_label, quantity)
+                    VALUES (%s, %s, %s, %s)''', (order_id, item_id, SCENARIO_ITEMS[item_id], quantity))
             conn.execute('''INSERT INTO ourisul_order_notice
                 (source, order_id, status, ordered_at, item_count)
                 VALUES (%s, %s, 'TEST_CREATED', to_char(now() AT TIME ZONE 'UTC',
                         'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 0)
                 ON CONFLICT (source, order_id) DO NOTHING''', (SOURCE, order_id))
+        else:
+            stored = dict(conn.execute('''SELECT item_id, quantity FROM ourisul_test_order_item
+                WHERE order_id = %s''', (order_id,)).fetchall())
+            if stored != (scenario or {}):
+                raise ValueError('Synthetic scenario conflicts with existing order')
         fulfillment.initialize(conn, order_id)
         return result.rowcount == 1
+
+
+def scenario_items(order_id, connect=database):
+    """Read stored fictional fixtures without creating schema or changing state."""
+    with connect() as conn:
+        if conn.execute("SELECT to_regclass('ourisul_test_order_item')").fetchone()[0] is None:
+            raise ValueError('Synthetic item table not initialized')
+        rows = conn.execute('''SELECT item_id, item_label, quantity FROM ourisul_test_order_item
+            WHERE order_id = %s ORDER BY item_id''', (order_id,)).fetchall()
+    return [{'id': item_id, 'name': item_label, 'quantity': quantity}
+            for item_id, item_label, quantity in rows]
 
 
 @bp.after_request
@@ -154,6 +224,7 @@ def create_test_order():
     if request.method == 'GET':
         session['test_order_csrf'] = secrets.token_urlsafe(32)
         session['test_order_id'] = 'TEST-' + secrets.token_hex(16)
+        session['test_scenario_order_id'] = 'TEST-' + secrets.token_hex(16)
         if request.args.get('view') == 'html':
             try:
                 pending = notices.synthetic_pending_counts(database)
@@ -170,10 +241,18 @@ Slack 알림은 대기열에 기록되며, 별도 설정된 테스트 발송기�
 <form method="post"><input type="hidden" name="csrf" value="{{csrf}}">
 <button type="submit">합성 주문 기록</button></form></html>''', csrf=session['test_order_csrf'])
     token = session.get('test_order_csrf', '')
-    order_id = session.get('test_order_id', '')
-    if not token or not secrets.compare_digest(token, request.form.get('csrf', '')) or not order_id:
+    if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
         abort(403)
-    created = record_test_order(order_id)
+    try:
+        scenario = parse_scenario(request.form)
+        order_id = session.get('test_scenario_order_id' if scenario is not None else 'test_order_id', '')
+        if not order_id:
+            abort(403)
+        created = record_test_order(order_id, scenario=scenario)
+    except ValueError as exc:
+        if str(exc) == 'Synthetic scenario conflicts with existing order':
+            abort(409)
+        abort(400)
     if request.args.get('view') == 'html':
         return redirect(url_for('test_orders.test_order_history', order_id=order_id,
                                 view='html'), code=303)
@@ -208,11 +287,14 @@ def test_order_history(order_id):
             next_status = fulfillment.STEPS.get(result['status'])
             try:
                 notice = notices.synthetic_notice_status(database, order_id)
+                items = scenario_items(order_id)
             except ValueError as exc:
-                if str(exc) != 'Synthetic order tables are not initialized':
+                if str(exc) not in ('Synthetic order tables are not initialized',
+                                    'Synthetic item table not initialized'):
                     raise
                 abort(503)
             return render_template_string(TRACKING_HISTORY, history=result, notice=notice,
+                                          scenario_items=items,
                                           notice_label=NOTICE_LABELS.get(notice.get('state'),
                                                                          '알 수 없는 상태'),
                                           next_status=next_status,
