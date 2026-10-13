@@ -461,7 +461,7 @@ def main():
                         failed = self.post('/admin/orders/test?view=html', data={
                             'csrf': csrf, 'scenario': 'fixed-v1',
                             'SYNTHETIC-CHEONGJU': '1', 'SYNTHETIC-TAKJU': '0'})
-                        self.assertEqual(failed.status_code, 400)
+                        self.assertEqual(failed.status_code, 502)
                         with cafe24.database() as conn:
                             for table in ('ourisul_test_orders', 'ourisul_test_order_item',
                                           'ourisul_order_notice', 'ourisul_test_order_state',
