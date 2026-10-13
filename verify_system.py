@@ -959,6 +959,75 @@ def main():
                     with self.assertRaisesRegex(ValueError, 'not initialized'):
                         notices.synthetic_pending_counts(lambda: connection)
 
+                def test_synthetic_pending_html_is_private_and_read_only(self):
+                    path = '/admin/orders/test?view=html'
+                    self.assertEqual(self.client.get(path).status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(path).status_code, 404)
+                    ids = {state: 'TEST-' + secrets.token_hex(16) for state in
+                           ('ready', 'expired', 'deferred', 'leased', 'leased_deferred',
+                            'delivered')}
+                    for order_id in ids.values():
+                        self.assertTrue(test_orders.record_test_order(order_id))
+                    orphan = 'TEST-' + secrets.token_hex(16)
+                    with cafe24.database() as conn:
+                        for state in ('expired', 'deferred', 'leased', 'leased_deferred'):
+                            conn.execute('''UPDATE ourisul_order_notice SET
+                                next_attempt_at = now() + (%s * interval '1 minute'),
+                                lease_until = now() + (%s * interval '1 minute')
+                                WHERE source = 'synthetic' AND order_id = %s''',
+                                (1 if state in ('deferred', 'leased_deferred') else -1,
+                                 1 if state in ('leased', 'leased_deferred') else -1,
+                                 ids[state]))
+                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now()
+                            WHERE source = 'synthetic' AND order_id = %s''',
+                            (ids['delivered'],))
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count)
+                            VALUES ('synthetic', %s, 'TEST_CREATED', '2026-10-13T00:00:00Z', 0),
+                                   ('cafe24', 'VERIFY-REAL', 'N10', '2026-10-13T00:00:00Z', 1)''',
+                            (orphan,))
+
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_state',
+                              'ourisul_test_order_event', 'ourisul_order_notice')
+
+                    def snapshot():
+                        with cafe24.database() as conn:
+                            return tuple(tuple(conn.execute('SELECT * FROM ' + table +
+                                                            ' ORDER BY 1').fetchall())
+                                         for table in tables)
+
+                    before = snapshot()
+                    with patch.object(requests.sessions.Session, 'request',
+                                      side_effect=AssertionError('Pending page must not use HTTP')) as http:
+                        page = self.get(path)
+                        self.assertEqual(page.status_code, 200)
+                        html = page.get_data(as_text=True)
+                        self.assertIn('<section aria-labelledby="pending-heading">', html)
+                        self.assertIn('name="viewport"', html)
+                        self.assertIn('<dt>발송 대기 (ready)</dt><dd>2건</dd>', html)
+                        self.assertIn('<dt>재시도 대기 (deferred)</dt><dd>1건</dd>', html)
+                        self.assertIn('<dt>발송 작업 점유 중 (leased)</dt><dd>2건</dd>', html)
+                        self.assertIn('<dt>미전송 합계 (total)</dt><dd>5건</dd>', html)
+                        self.assertEqual(page.headers['Cache-Control'], 'no-store')
+                        self.assertEqual(page.headers['Referrer-Policy'], 'no-referrer')
+                        default = self.get('/admin/orders/test')
+                        self.assertEqual(default.status_code, 200)
+                        self.assertNotIn('pending-heading', default.get_data(as_text=True))
+                        self.assertNotIn('미전송 합계', default.get_data(as_text=True))
+                        history = self.get(f'/admin/orders/test/{ids["ready"]}/history')
+                        self.assertEqual(history.status_code, 200)
+                        self.assertEqual(set(history.json),
+                                         {'order_id', 'status', 'version', 'events'})
+                        http.assert_not_called()
+                    self.assertEqual(snapshot(), before)
+
+                    with cafe24.database() as conn:
+                        conn.execute('DROP TABLE ourisul_order_notice')
+                    unavailable = self.get(path)
+                    self.assertEqual(unavailable.status_code, 503)
+                    self.assertEqual(unavailable.headers['Cache-Control'], 'no-store')
+
                 def test_synthetic_exact_inspection_is_read_only(self):
                     ids = {name: 'TEST-' + secrets.token_hex(16) for name in
                            ('ready', 'deferred', 'leased', 'both', 'delivered', 'delivered_both')}
