@@ -369,6 +369,72 @@ def main():
                         with cafe24.database() as conn:
                             conn.execute('ALTER TABLE ourisul_order_notice DROP CONSTRAINT no_synthetic')
 
+                def test_synthetic_forms_keep_identity_across_tabs_and_reject_foreign_ids(self):
+                    path = '/admin/orders/test?view=html'
+
+                    def open_form():
+                        page = self.get(path)
+                        self.assertEqual(page.status_code, 200)
+                        with self.client.session_transaction() as sess:
+                            result = (sess['test_order_csrf'], sess['test_order_id'],
+                                      sess['test_scenario_order_id'])
+                        self.assertIn(f'name="order_id" value="{result[1]}"',
+                                      page.get_data(as_text=True))
+                        self.assertIn(f'name="order_id" value="{result[2]}"',
+                                      page.get_data(as_text=True))
+                        return result
+
+                    first = open_form()
+                    second = open_form()
+                    self.assertEqual(first[0], second[0])
+                    self.assertNotEqual(first[1:], second[1:])
+                    empty = lambda form: {'csrf': form[0], 'order_id': form[1]}
+                    basket = lambda form, qty: {'csrf': form[0], 'order_id': form[2],
+                        'scenario': 'fixed-v1', 'SYNTHETIC-CHEONGJU': str(qty),
+                        'SYNTHETIC-TAKJU': '0'}
+                    self.assertEqual(self.post(path, data=empty(first)).status_code, 303)
+                    self.assertEqual(self.post(path, data=empty(second)).status_code, 303)
+                    self.assertEqual(self.post(path, data=basket(first, 1)).status_code, 303)
+                    self.assertEqual(self.post(path, data=basket(second, 2)).status_code, 303)
+                    self.assertEqual(self.post(path, data=empty(first)).status_code, 303)
+                    self.assertEqual(self.post(path, data=basket(first, 1)).status_code, 303)
+                    self.assertEqual(self.post(path, data=basket(first, 3)).status_code, 409)
+                    foreign_client = app.test_client()
+                    self.assertEqual(foreign_client.get(path, base_url='https://localhost',
+                                                        auth=self.auth).status_code, 200)
+                    with foreign_client.session_transaction() as sess:
+                        foreign_id = sess['test_order_id']
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_order_notice', 'ourisul_test_order_state',
+                              'ourisul_test_order_event')
+                    with cafe24.database() as conn:
+                        saved = conn.execute('''SELECT order_id FROM ourisul_test_orders
+                            ORDER BY order_id''').fetchall()
+                        self.assertEqual(saved, [(value,) for value in sorted(
+                            (first[1], first[2], second[1], second[2]))])
+                        before = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                  for table in tables}
+                    invalid = [empty(first) | {'order_id': foreign_id},
+                               empty(first) | {'order_id': 'TEST-' + 'f' * 32},
+                               empty(first) | {'order_id': first[2]},
+                               basket(first, 1) | {'order_id': first[1]}]
+                    for form in invalid:
+                        self.assertEqual(self.post(path, data=form).status_code, 403)
+                    self.assertEqual(self.post(path, data=MultiDict(list(empty(first).items()) +
+                                    [('order_id', first[1])])).status_code, 400)
+                    self.assertEqual(self.post(path, data={'csrf': first[0]}).status_code, 403)
+                    self.assertEqual(self.post('/admin/orders/test', data={
+                        key: value for key, value in basket(first, 1).items()
+                        if key != 'order_id'}).status_code, 403)
+                    for _ in range(test_orders.RECENT_FORM_LIMIT + 1):
+                        open_form()
+                    self.assertEqual(self.post(path, data=empty(first)).status_code, 403)
+                    self.assertEqual(self.post(path, data=basket(first, 1)).status_code, 403)
+                    with cafe24.database() as conn:
+                        after = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                 for table in tables}
+                    self.assertEqual(after, before)
+
                 def test_synthetic_scenario_persists_atomically_and_replays_exact_payload(self):
                     path = '/admin/orders/test?view=html'
                     self.assertEqual(self.client.get(path).status_code, 401)
@@ -380,7 +446,7 @@ def main():
                         csrf = sess['test_order_csrf']
                         scenario_id = sess['test_scenario_order_id']
                         legacy_id = sess['test_order_id']
-                    data = {'csrf': csrf, 'scenario': 'fixed-v1',
+                    data = {'csrf': csrf, 'order_id': scenario_id, 'scenario': 'fixed-v1',
                             'SYNTHETIC-CHEONGJU': '2', 'SYNTHETIC-TAKJU': '1'}
                     self.assertEqual(self.post(path, data=dict(data, csrf='bad')).status_code, 403)
                     for bad in (dict(data, **{'SYNTHETIC-TAKJU': '11'}),
@@ -459,7 +525,7 @@ def main():
                             test_orders.record_test_order(
                                 direct_id, scenario={'SYNTHETIC-CHEONGJU': 1})
                         failed = self.post('/admin/orders/test?view=html', data={
-                            'csrf': csrf, 'scenario': 'fixed-v1',
+                            'csrf': csrf, 'order_id': order_id, 'scenario': 'fixed-v1',
                             'SYNTHETIC-CHEONGJU': '1', 'SYNTHETIC-TAKJU': '0'})
                         self.assertEqual(failed.status_code, 502)
                         with cafe24.database() as conn:
@@ -531,7 +597,7 @@ def main():
                     with self.client.session_transaction() as sess:
                         csrf, order_id = sess['test_order_csrf'], sess['test_order_id']
                     self.assertEqual(self.post(form_path, data={'csrf': 'bad'}).status_code, 403)
-                    created = self.post(form_path, data={'csrf': csrf})
+                    created = self.post(form_path, data={'csrf': csrf, 'order_id': order_id})
                     self.assertEqual(created.status_code, 303)
                     self.assertEqual(created.headers['Location'],
                                      f'/admin/orders/test/{order_id}/history?view=html')
