@@ -2,6 +2,22 @@
 
 ## Fictional basket rehearsal
 
+The admin creation forms now submit their own generated `TEST-*` IDs. A GET
+keeps the session CSRF token stable and remembers the last eight IDs for each
+of the zero-item and fictional-basket modes. This lets an older tab submit or
+retry against its original ID after another tab loads the page; exact replay
+remains idempotent and a changed basket still conflicts. An ID from the wrong
+mode, an unissued or evicted ID, a duplicate ID field, or a missing ID on an
+HTML submission is rejected before any database write. The original zero-item
+CSRF-only JSON POST remains supported for compatibility; basket submissions
+require their explicit ID. The bounded list means forms older than eight newer
+page loads must be refreshed.
+This covers tabs loaded in sequence. Simultaneous GET responses can overwrite
+each other's cookie-backed allowlist; an unrecognized form then fails closed
+with 403. The legacy zero-item JSON request without an ID still targets the
+latest session ID, so callers that need stable replay should submit the
+explicit ID.
+
 The administrator-only `/admin/orders/test?view=html` page has a separate
 fictional basket form with two fixed `SYNTHETIC-*` fixtures. Each accepts a
 whole-number quantity from 0 to 10, with at least one positive quantity.
