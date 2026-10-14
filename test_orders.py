@@ -10,6 +10,7 @@ import re
 import secrets
 
 from flask import Blueprint, abort, redirect, render_template_string, request, session, url_for
+from psycopg.errors import UndefinedTable
 
 from cafe24 import database, protected
 import order_notifications as notices
@@ -227,12 +228,34 @@ def record_test_order(order_id, connect=database, scenario=None):
 def scenario_items(order_id, connect=database):
     """Read stored fictional fixtures without creating schema or changing state."""
     with connect() as conn:
-        if conn.execute("SELECT to_regclass('ourisul_test_order_item')").fetchone()[0] is None:
-            raise ValueError('Synthetic item table not initialized')
-        rows = conn.execute('''SELECT item_id, item_label, quantity FROM ourisul_test_order_item
-            WHERE order_id = %s ORDER BY item_id''', (order_id,)).fetchall()
+        return scenario_items_in_connection(conn, order_id)
+
+
+def scenario_items_in_connection(conn, order_id):
+    if conn.execute("SELECT to_regclass('ourisul_test_order_item')").fetchone()[0] is None:
+        raise ValueError('Synthetic item table not initialized')
+    rows = conn.execute('''SELECT item_id, item_label, quantity FROM ourisul_test_order_item
+        WHERE order_id = %s ORDER BY item_id''', (order_id,)).fetchall()
     return [{'id': item_id, 'name': item_label, 'quantity': quantity}
             for item_id, item_label, quantity in rows]
+
+
+def order_snapshot(order_id, connect=database):
+    """Read a complete admin rehearsal snapshot without creating or changing rows."""
+    fulfillment._valid_order_id(order_id)
+    try:
+        with connect() as conn:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+            result = fulfillment.history_in_connection(conn, order_id)
+            if result is None:
+                return None
+            result['items'] = scenario_items_in_connection(conn, order_id)
+            result['notice'] = notices.synthetic_notice_status_in_connection(conn, order_id)
+            result['is_test'] = True
+            result['source'] = SOURCE
+            return result
+    except UndefinedTable as exc:
+        raise ValueError('Synthetic order tables are not initialized') from exc
 
 
 @bp.after_request
@@ -311,6 +334,17 @@ def lookup_test_order():
 def test_order_history(order_id):
     """Read or advance a simulated delivery status; no carrier is contacted."""
     if request.method == 'GET':
+        if request.args.get('view') == 'snapshot':
+            try:
+                snapshot = order_snapshot(order_id)
+            except ValueError as exc:
+                if str(exc) in ('Synthetic order tables are not initialized',
+                                'Synthetic item table not initialized'):
+                    abort(503)
+                abort(404)
+            if snapshot is None:
+                abort(404)
+            return snapshot
         try:
             result = fulfillment.history(order_id)
         except ValueError:
