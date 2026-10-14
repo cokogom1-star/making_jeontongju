@@ -52,11 +52,13 @@ pattern="TEST-[0-9a-f]{32}" placeholder="TEST-…">
 <button type="submit">상태 조회</button></form>
 <form method="post" action="{{url_for('test_orders.create_test_order', view='html')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
+<input type="hidden" name="order_id" value="{{order_id}}">
 <button type="submit">새 합성 주문 기록</button></form>
 <section aria-labelledby="scenario-heading"><h2 id="scenario-heading">가상 품목 수량 기록</h2>
 <p>관리자 전용 가상 장바구니입니다. 실제 판매 상품·재고·가격·결제·배송과 연결되지 않습니다.</p>
 <form method="post" action="{{url_for('test_orders.create_test_order', view='html')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
+<input type="hidden" name="order_id" value="{{scenario_order_id}}">
 <input type="hidden" name="scenario" value="fixed-v1">
 <label>가상 청주 <input type="number" name="SYNTHETIC-CHEONGJU" min="0" max="10" step="1" value="1" required></label>
 <label>가상 탁주 <input type="number" name="SYNTHETIC-TAKJU" min="0" max="10" step="1" value="0" required></label>
@@ -113,6 +115,7 @@ NOTICE_LABELS = {'ready': '발송 대기', 'deferred': '재시도 대기',
                  'leased': '발송 작업 점유 중', 'delivered': '전송 기록 완료',
                  'missing': '알림 기록 없음'}
 SCENARIO_ITEMS = {'SYNTHETIC-CHEONGJU': '가상 청주', 'SYNTHETIC-TAKJU': '가상 탁주'}
+RECENT_FORM_LIMIT = 8
 
 
 def parse_scenario(form):
@@ -120,6 +123,7 @@ def parse_scenario(form):
     keys = set(form.keys())
     if any(len(form.getlist(key)) != 1 for key in keys):
         raise ValueError('Duplicate synthetic scenario field')
+    keys.discard('order_id')
     if keys == {'csrf'}:
         return None  # Preserve the older zero-item admin form.
     if keys != {'csrf', 'scenario', *SCENARIO_ITEMS} or form['scenario'] != 'fixed-v1':
@@ -144,6 +148,30 @@ def validated_scenario(scenario):
                    for item, qty in scenario.items())):
         raise ValueError('Invalid synthetic scenario')
     return scenario
+
+
+def remember_form_id(mode, order_id):
+    """Keep a small set of rendered form IDs for safe cross-tab submissions."""
+    key = 'test_scenario_order_ids' if mode == 'scenario' else 'test_order_ids'
+    session[key] = (session.get(key, []) + [order_id])[-RECENT_FORM_LIMIT:]
+
+
+def submitted_form_id(scenario):
+    """Resolve a submitted ID only from the matching form mode in this session."""
+    mode = 'scenario' if scenario is not None else 'empty'
+    key = 'test_scenario_order_ids' if mode == 'scenario' else 'test_order_ids'
+    order_id = request.form.get('order_id')
+    if order_id is None:
+        # Preserve only the original zero-item JSON request shape.
+        if request.args.get('view') == 'html' or scenario is not None:
+            abort(403)
+        order_id = session.get('test_order_id', '')
+    elif (not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id)
+          or order_id not in session.get(key, [])):
+        abort(403)
+    if not order_id:
+        abort(403)
+    return order_id
 
 
 def schema(conn):
@@ -222,9 +250,12 @@ def hide_disabled_test_orders():
 @protected
 def create_test_order():
     if request.method == 'GET':
-        session['test_order_csrf'] = secrets.token_urlsafe(32)
+        if not session.get('test_order_csrf'):
+            session['test_order_csrf'] = secrets.token_urlsafe(32)
         session['test_order_id'] = 'TEST-' + secrets.token_hex(16)
         session['test_scenario_order_id'] = 'TEST-' + secrets.token_hex(16)
+        remember_form_id('empty', session['test_order_id'])
+        remember_form_id('scenario', session['test_scenario_order_id'])
         if request.args.get('view') == 'html':
             try:
                 pending = notices.synthetic_pending_counts(database)
@@ -233,21 +264,23 @@ def create_test_order():
                     raise
                 abort(503)
             return render_template_string(TRACKING_FORM, csrf=session['test_order_csrf'],
+                                          order_id=session['test_order_id'],
+                                          scenario_order_id=session['test_scenario_order_id'],
                                           pending=pending)
         return render_template_string('''<!doctype html><html lang="ko"><meta charset="utf-8">
 <meta name="robots" content="noindex,nofollow"><title>합성 주문 테스트</title>
 <h1>합성 주문 테스트</h1><p>고객·상품·결제·배송이 없는 테스트 주문을 DB에 저장합니다.
 Slack 알림은 대기열에 기록되며, 별도 설정된 테스트 발송기만 전송할 수 있습니다.</p>
 <form method="post"><input type="hidden" name="csrf" value="{{csrf}}">
-<button type="submit">합성 주문 기록</button></form></html>''', csrf=session['test_order_csrf'])
+<input type="hidden" name="order_id" value="{{order_id}}">
+<button type="submit">합성 주문 기록</button></form></html>''',
+                                      csrf=session['test_order_csrf'], order_id=session['test_order_id'])
     token = session.get('test_order_csrf', '')
     if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
         abort(403)
     try:
         scenario = parse_scenario(request.form)
-        order_id = session.get('test_scenario_order_id' if scenario is not None else 'test_order_id', '')
-        if not order_id:
-            abort(403)
+        order_id = submitted_form_id(scenario)
         created = record_test_order(order_id, scenario=scenario)
     except ValueError as exc:
         if str(exc) == 'Synthetic scenario conflicts with existing order':
