@@ -193,7 +193,7 @@ def schema(conn):
 def record_test_order(order_id, connect=database, scenario=None):
     """Save an empty synthetic order and its notice in one transaction.
 
-    Repeating an ID returns False without creating another order or notice.
+    Repeating an ID returns False, restoring a missing notice for an exact replay.
     """
     if not isinstance(order_id, str) or not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id):
         raise ValueError('Invalid synthetic order ID')
@@ -207,16 +207,19 @@ def record_test_order(order_id, connect=database, scenario=None):
             for item_id, quantity in (scenario or {}).items():
                 conn.execute('''INSERT INTO ourisul_test_order_item (order_id, item_id, item_label, quantity)
                     VALUES (%s, %s, %s, %s)''', (order_id, item_id, SCENARIO_ITEMS[item_id], quantity))
-            conn.execute('''INSERT INTO ourisul_order_notice
-                (source, order_id, status, ordered_at, item_count)
-                VALUES (%s, %s, 'TEST_CREATED', to_char(now() AT TIME ZONE 'UTC',
-                        'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 0)
-                ON CONFLICT (source, order_id) DO NOTHING''', (SOURCE, order_id))
         else:
             stored = dict(conn.execute('''SELECT item_id, quantity FROM ourisul_test_order_item
                 WHERE order_id = %s''', (order_id,)).fetchall())
             if stored != (scenario or {}):
                 raise ValueError('Synthetic scenario conflicts with existing order')
+        # Exact replays may repair a missing outbox row. A pre-existing row is
+        # never updated, so delivery, retry and lease state remain intact.
+        conn.execute('''INSERT INTO ourisul_order_notice
+            (source, order_id, status, ordered_at, item_count)
+            SELECT %s, order_id, 'TEST_CREATED',
+                to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 0
+            FROM ourisul_test_orders WHERE order_id = %s
+            ON CONFLICT (source, order_id) DO NOTHING''', (SOURCE, order_id))
         fulfillment.initialize(conn, order_id)
         return result.rowcount == 1
 

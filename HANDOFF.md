@@ -2,6 +2,17 @@
 
 ## Fictional basket rehearsal
 
+An exact, authorized creation POST replay now restores a missing synthetic
+Slack outbox row in the same transaction. It uses the saved order creation time
+for `ordered_at` and does not change an existing notice, including its delivered,
+retry, attempt, or lease fields. A changed basket still conflicts before repair.
+Read-only GETs never repair notices; there is no production backfill. If an
+outbox row was deleted after Slack accepted it, restoring the row can cause a
+duplicate test message on a later explicit send. This path does not provide
+exactly-once delivery. The isolated PostgreSQL verifier covers zero-item and
+basket repair, conflict rejection, full-row preservation, and failed-repair
+rollback.
+
 The admin creation forms now submit their own generated `TEST-*` IDs. A GET
 keeps the session CSRF token stable and remembers the last eight IDs for each
 of the zero-item and fictional-basket modes. This lets an older tab submit or
