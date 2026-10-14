@@ -369,6 +369,99 @@ def main():
                         with cafe24.database() as conn:
                             conn.execute('ALTER TABLE ourisul_order_notice DROP CONSTRAINT no_synthetic')
 
+                def test_synthetic_exact_replay_repairs_only_missing_notice(self):
+                    for scenario in (None, {'SYNTHETIC-CHEONGJU': 2}):
+                        order_id = 'TEST-' + secrets.token_hex(16)
+                        self.assertTrue(test_orders.record_test_order(order_id, scenario=scenario))
+                        with cafe24.database() as conn:
+                            original = conn.execute('''SELECT ordered_at FROM ourisul_order_notice
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()[0]
+                            conn.execute('''DELETE FROM ourisul_order_notice
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,))
+                        # A different basket cannot turn a conflict into a repair.
+                        different = {'SYNTHETIC-TAKJU': 1} if scenario else {'SYNTHETIC-CHEONGJU': 1}
+                        with self.assertRaisesRegex(ValueError, 'scenario conflicts'):
+                            test_orders.record_test_order(order_id, scenario=different)
+                        with cafe24.database() as conn:
+                            self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_order_notice
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()[0], 0)
+                        self.assertFalse(test_orders.record_test_order(order_id, scenario=scenario))
+                        with cafe24.database() as conn:
+                            self.assertEqual(conn.execute('''SELECT status, ordered_at, item_count, attempts,
+                                delivered_at FROM ourisul_order_notice WHERE source='synthetic'
+                                AND order_id=%s''', (order_id,)).fetchone(),
+                                ('TEST_CREATED', original, 0, 0, None))
+                            conn.execute('''UPDATE ourisul_order_notice SET attempts=3,
+                                next_attempt_at=now()+interval '1 hour',
+                                lease_until=now()+interval '2 hours', delivered_at=now()
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,))
+                            before = conn.execute('''SELECT * FROM ourisul_order_notice
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()
+                        self.assertFalse(test_orders.record_test_order(order_id, scenario=scenario))
+                        with cafe24.database() as conn:
+                            self.assertEqual(conn.execute('''SELECT * FROM ourisul_order_notice
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone(), before)
+                            self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_test_order_event
+                                WHERE order_id=%s''', (order_id,)).fetchone()[0], 1)
+
+                def test_synthetic_replay_notice_repair_failure_rolls_back(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    with cafe24.database() as conn:
+                        conn.execute('''DELETE FROM ourisul_order_notice
+                            WHERE source='synthetic' AND order_id=%s''', (order_id,))
+                        conn.execute("ALTER TABLE ourisul_order_notice ADD CONSTRAINT no_repaired_synthetic "
+                                     "CHECK (source <> 'synthetic')")
+                        tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                                  'ourisul_order_notice', 'ourisul_test_order_state',
+                                  'ourisul_test_order_event')
+                        before = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                  for table in tables}
+                    try:
+                        with self.assertRaises(psycopg.errors.CheckViolation):
+                            test_orders.record_test_order(order_id)
+                        with cafe24.database() as conn:
+                            after = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                     for table in tables}
+                            self.assertEqual(after, before)
+                    finally:
+                        with cafe24.database() as conn:
+                            conn.execute('ALTER TABLE ourisul_order_notice DROP CONSTRAINT no_repaired_synthetic')
+
+                def test_synthetic_route_replay_repairs_only_after_authorized_post(self):
+                    path = '/admin/orders/test'
+                    for scenario in (False, True):
+                        self.assertEqual(self.get(path + '?view=html').status_code, 200)
+                        with self.client.session_transaction() as sess:
+                            csrf = sess['test_order_csrf']
+                            order_id = sess['test_scenario_order_id' if scenario else 'test_order_id']
+                        data = {'csrf': csrf, 'order_id': order_id}
+                        if scenario:
+                            data.update({'scenario': 'fixed-v1',
+                                         'SYNTHETIC-CHEONGJU': '1', 'SYNTHETIC-TAKJU': '0'})
+                        self.assertEqual(self.post(path, data=data).status_code, 200)
+                        with cafe24.database() as conn:
+                            conn.execute('''DELETE FROM ourisul_order_notice
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,))
+
+                        def missing():
+                            with cafe24.database() as conn:
+                                return conn.execute('''SELECT count(*) FROM ourisul_order_notice
+                                    WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()[0] == 0
+
+                        self.assertTrue(missing())
+                        self.assertEqual(self.get(path + '?view=html').status_code, 200)
+                        self.assertEqual(self.get(f'/admin/orders/test/{order_id}/history?view=html').status_code, 200)
+                        self.assertTrue(missing())
+                        self.assertEqual(self.post(path, data=dict(data, csrf='wrong')).status_code, 403)
+                        self.assertEqual(self.client.post(path, data=data, base_url='https://localhost').status_code, 401)
+                        with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                            self.assertEqual(self.post(path, data=data).status_code, 404)
+                        self.assertTrue(missing())
+                        replay = self.post(path, data=data)
+                        self.assertEqual((replay.status_code, replay.json['created']), (200, False))
+                        self.assertFalse(missing())
+
                 def test_synthetic_forms_keep_identity_across_tabs_and_reject_foreign_ids(self):
                     path = '/admin/orders/test?view=html'
 
