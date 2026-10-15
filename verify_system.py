@@ -955,6 +955,89 @@ def main():
                                      ('TEST_PREPARED', 1))
                     self.assertEqual([event['version'] for event in latest['events']], [0, 1])
 
+                def test_synthetic_order_snapshot_is_backed_private_and_read_only(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    path = f'/admin/orders/test/{order_id}/history'
+                    self.assertEqual(self.client.get(path + '?view=snapshot').status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(path + '?view=snapshot').status_code, 404)
+                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 404)
+                    self.assertEqual(self.get('/admin/orders/test/bad/history?view=snapshot').status_code, 404)
+                    self.assertTrue(test_orders.record_test_order(order_id, scenario={
+                        'SYNTHETIC-CHEONGJU': 2, 'SYNTHETIC-TAKJU': 1}))
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_order_notice', 'ourisul_test_order_state',
+                              'ourisul_test_order_event')
+                    with cafe24.database() as conn:
+                        before = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                  for table in tables}
+                    snapshot = self.get(path + '?view=snapshot')
+                    self.assertEqual(snapshot.status_code, 200)
+                    self.assertEqual(snapshot.headers['Cache-Control'], 'no-store')
+                    self.assertEqual(snapshot.headers['Referrer-Policy'], 'no-referrer')
+                    data = snapshot.json
+                    self.assertEqual((data['order_id'], data['status'], data['version']),
+                                     (order_id, 'TEST_CREATED', 0))
+                    self.assertEqual((data['is_test'], data['source']), (True, 'synthetic'))
+                    self.assertEqual([event['to_status'] for event in data['events']], ['TEST_CREATED'])
+                    self.assertEqual(data['items'], [
+                        {'id': 'SYNTHETIC-CHEONGJU', 'name': '가상 청주', 'quantity': 2},
+                        {'id': 'SYNTHETIC-TAKJU', 'name': '가상 탁주', 'quantity': 1}])
+                    self.assertEqual(data['notice']['state'], 'ready')
+                    self.assertEqual(data['notice']['attempts'], 0)
+                    self.assertEqual(set(self.get(path).json), {'order_id', 'status', 'version', 'events'})
+                    with cafe24.database() as conn:
+                        after = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                 for table in tables}
+                    self.assertEqual(after, before)
+                    with cafe24.database() as conn:
+                        conn.execute('DROP TABLE ourisul_test_order_item')
+                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 503)
+                    with cafe24.database() as conn:
+                        test_orders.schema(conn)
+                        conn.execute('DROP TABLE ourisul_order_notice')
+                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 503)
+                    with cafe24.database() as conn:
+                        notices.schema(conn)
+                        conn.execute('DROP TABLE ourisul_test_order_state')
+                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 503)
+
+                def test_synthetic_order_snapshot_uses_one_database_snapshot(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id, scenario={
+                        'SYNTHETIC-CHEONGJU': 1}))
+                    reads = []
+
+                    @contextmanager
+                    def interleaved_read():
+                        with cafe24.database() as conn:
+                            class ReadConnection:
+                                def execute(self, query, params=None):
+                                    cursor = conn.execute(query, params)
+                                    reads.append(query)
+                                    if len(reads) == 2:
+                                        # First SELECT has taken the reader snapshot.
+                                        fulfillment.transition(order_id, 'TEST_PREPARED', 0,
+                                                               'during-snapshot')
+                                        with cafe24.database() as writer:
+                                            writer.execute('''UPDATE ourisul_order_notice
+                                                SET delivered_at=now() WHERE source='synthetic'
+                                                AND order_id=%s''', (order_id,))
+                                            writer.execute('''UPDATE ourisul_test_order_item SET quantity=2
+                                                WHERE order_id=%s AND item_id='SYNTHETIC-CHEONGJU' ''',
+                                                (order_id,))
+                                    return cursor
+
+                            yield ReadConnection()
+
+                    snapshot = test_orders.order_snapshot(order_id, connect=interleaved_read)
+                    self.assertEqual((snapshot['status'], snapshot['version']), ('TEST_CREATED', 0))
+                    self.assertEqual(snapshot['items'][0]['quantity'], 1)
+                    self.assertEqual(snapshot['notice']['state'], 'ready')
+                    self.assertEqual(test_orders.order_snapshot(order_id)['status'], 'TEST_PREPARED')
+                    self.assertEqual(test_orders.order_snapshot(order_id)['notice']['state'], 'delivered')
+                    self.assertEqual(test_orders.order_snapshot(order_id)['items'][0]['quantity'], 2)
+
                 def test_synthetic_fulfillment_concurrent_version_conflict(self):
                     order_id = 'TEST-' + secrets.token_hex(16)
                     self.assertTrue(test_orders.record_test_order(order_id))

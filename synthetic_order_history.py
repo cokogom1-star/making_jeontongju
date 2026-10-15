@@ -98,24 +98,31 @@ def transition(order_id, next_status, expected_version, request_key, connect=dat
         return {'status': next_status, 'version': next_version, 'created': True}
 
 
-def history(order_id, connect=database):
-    """Read the current simulated delivery state and ordered event history."""
+def history_in_connection(conn, order_id):
+    """Read state and events from one statement in the caller's transaction."""
     _valid_order_id(order_id)
-    try:
-        with connect() as conn:
-            rows = conn.execute('''SELECT s.status, s.version,
+    rows = conn.execute('''SELECT s.status, s.version,
                        e.version, e.from_status, e.to_status, e.created_at
                 FROM ourisul_test_order_state AS s
                 LEFT JOIN ourisul_test_order_event AS e ON e.order_id = s.order_id
                 WHERE s.order_id = %s ORDER BY e.version''', (order_id,)).fetchall()
-            if not rows:
-                return None
-    except UndefinedTable:
-        # A new deployment may receive a read before any synthetic order has
-        # initialized the tables. Reads must not run DDL or create records.
+    if not rows:
         return None
     return {'order_id': order_id, 'status': rows[0][0], 'version': rows[0][1],
             'events': [{'version': version, 'from_status': before,
                         'to_status': after, 'created_at': created_at.isoformat()}
                        for _, _, version, before, after, created_at in rows
                        if version is not None]}
+
+
+def history(order_id, connect=database):
+    """Read the current simulated delivery state and ordered event history."""
+    _valid_order_id(order_id)
+    try:
+        with connect() as conn:
+            return history_in_connection(conn, order_id)
+    except UndefinedTable:
+        # A new deployment may receive a read before any synthetic order has
+        # initialized the tables. Reads must not run DDL or create records.
+        return None
+

@@ -188,20 +188,30 @@ def synthetic_pending_counts(connect):
         raise ValueError('Synthetic order tables are not initialized') from exc
 
 
-def synthetic_notice_status(connect, order_id):
-    """Inspect one backed test notice without claiming it or contacting Slack."""
+def synthetic_notice_status_in_connection(conn, order_id):
+    """Inspect a backed notice in the caller's read transaction."""
     _valid_synthetic_id(order_id)
-    try:
-        with connect() as conn:
-            row = conn.execute('''SELECT n.attempts, n.delivered_at,
+    row = conn.execute('''SELECT n.attempts, n.delivered_at,
                     n.next_attempt_at, n.lease_until,
                     n.lease_until >= now(), n.next_attempt_at > now()
                 FROM ourisul_order_notice n
                 WHERE n.source = 'synthetic' AND n.order_id = %s
                   AND EXISTS (SELECT 1 FROM ourisul_test_orders t WHERE t.order_id = n.order_id)''',
                 (order_id,)).fetchone()
+    return _synthetic_notice_result(order_id, row)
+
+
+def synthetic_notice_status(connect, order_id):
+    """Inspect one backed test notice without claiming it or contacting Slack."""
+    _valid_synthetic_id(order_id)
+    try:
+        with connect() as conn:
+            return synthetic_notice_status_in_connection(conn, order_id)
     except UndefinedTable as exc:
         raise ValueError('Synthetic order tables are not initialized') from exc
+
+
+def _synthetic_notice_result(order_id, row):
     if row is None:
         return {'order_id': order_id, 'state': 'missing'}
     attempts, delivered_at, next_attempt_at, lease_until, leased, deferred = row
@@ -233,3 +243,4 @@ def poll_and_deliver(sources, start, end, connect, webhook_url=None, post=reques
     for source, fetch in sources.items():
         counts[source] = record_orders(source, fetch(start, end), connect)
     return {'new_orders': counts, **deliver_pending(connect, webhook_url, post=post)}
+
