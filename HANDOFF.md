@@ -1,5 +1,25 @@
 # Handoff
 
+## Admin synthetic order snapshot
+
+`GET /admin/orders/test/<TEST-ID>/history?view=snapshot` returns the saved
+synthetic status and event history, fictional basket item IDs/labels/quantities,
+and backed synthetic Slack outbox state in one JSON response. Explicit
+`is_test: true` and `source: synthetic` fields identify this as rehearsal data
+for downstream consumers. It uses the
+existing admin authentication and `SYNTHETIC_ORDER_TEST_ENABLED` gate. The
+read runs in a single PostgreSQL repeatable-read, read-only transaction, so
+status, basket and notice reflect one database snapshot even if a status
+transition or sender update commits during the request. It does not create
+schema, repair rows, send messages, or contact a carrier. Unknown orders and
+invalid IDs return 404; a missing required item, event/state, or notice table
+returns 503. The previous default JSON history shape and HTML page are
+unchanged. The notice state is an outbox record and does not prove Slack
+receipt. The isolated PostgreSQL verifier covers access controls, data shape,
+read-only behavior, missing tables, and concurrent interleaving. A local
+PostgreSQL verifier URL was not available; CI must run the full verifier on
+the exact PR revision before merge.
+
 ## Fictional basket rehearsal
 
 An exact, authorized creation POST replay now restores a missing synthetic
