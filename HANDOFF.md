@@ -58,6 +58,10 @@ fixture IDs, labels and positive quantities are saved in
 transport order, ID-only synthetic notice, and initial status event. The
 original zero-item admin form and JSON response remain available. A retry
 with the same ID and quantities is idempotent; a changed basket conflicts.
+For an HTML submission, the conflict returns a 409 recovery page linking to
+the saved order timeline and a fresh creation form. The default endpoint keeps
+its previous 409 response. The verifier compares all five synthetic-order
+tables before and after both conflict responses to confirm no saved state changes.
 Missing, duplicate, unknown and malformed form fields are rejected. The
 HTML history displays the saved labels and quantities without updating them;
 a missing item table returns 503 rather than claiming the order had no items.
