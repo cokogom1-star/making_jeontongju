@@ -558,7 +558,31 @@ def main():
                     self.assertEqual((created.status_code, created.headers['Location']),
                                      (303, f'/admin/orders/test/{scenario_id}/history?view=html'))
                     self.assertEqual(self.post(path, data=data).status_code, 303)
-                    self.assertEqual(self.post(path, data=dict(data, **{'SYNTHETIC-CHEONGJU': '3'})).status_code, 409)
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_order_notice', 'ourisul_test_order_state',
+                              'ourisul_test_order_event')
+                    with cafe24.database() as conn:
+                        before_conflict = {table: conn.execute(
+                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                            for table in tables}
+                    changed = dict(data, **{'SYNTHETIC-CHEONGJU': '3'})
+                    conflict = self.post(path, data=changed)
+                    self.assertEqual((conflict.status_code, conflict.mimetype), (409, 'text/html'))
+                    self.assertIn(f'/admin/orders/test/{scenario_id}/history?view=html',
+                                  conflict.get_data(as_text=True))
+                    self.assertIn('href="/admin/orders/test?view=html"',
+                                  conflict.get_data(as_text=True))
+                    self.assertIn('새 합성 주문 시작하기', conflict.get_data(as_text=True))
+                    default_conflict = self.post('/admin/orders/test', data=changed)
+                    self.assertEqual((default_conflict.status_code, default_conflict.mimetype),
+                                     (409, 'text/html'))
+                    self.assertNotIn('새 합성 주문 시작하기',
+                                     default_conflict.get_data(as_text=True))
+                    with cafe24.database() as conn:
+                        after_conflict = {table: conn.execute(
+                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                            for table in tables}
+                    self.assertEqual(after_conflict, before_conflict)
                     with cafe24.database() as conn:
                         self.assertEqual(conn.execute('SELECT order_id, status, item_count FROM ourisul_test_orders').fetchall(),
                                          [(scenario_id, 'TEST_CREATED', 0)])
@@ -574,9 +598,6 @@ def main():
                     self.assertIn('가상 청주', history.get_data(as_text=True))
                     self.assertIn('가상 탁주', history.get_data(as_text=True))
                     self.assertNotIn('가상 청주', self.get('/').get_data(as_text=True))
-                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
-                              'ourisul_order_notice', 'ourisul_test_order_state',
-                              'ourisul_test_order_event')
                     with cafe24.database() as conn:
                         before = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
                                   for table in tables}

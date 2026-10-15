@@ -110,6 +110,15 @@ TRACKING_CONFLICT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-
 <p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">최신 상태 보기</a></p>
 </main></body></html>''')
 
+TRACKING_CREATION_CONFLICT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>가상 품목 기록 확인 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>이미 기록된 합성 주문입니다</h1>
+<p>이 주문 ID에는 다른 가상 품목 수량이 저장되어 있습니다. 저장된 기록을 확인하거나 새 합성 주문을 시작해 주세요.</p>
+<p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">저장된 주문 보기</a></p>
+<p><a href="{{url_for('test_orders.create_test_order', view='html')}}">새 합성 주문 시작하기</a></p>
+</main></body></html>''')
+
 NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 발송 처리',
                'TEST_DELIVERED': '합성 배송 완료'}
 NOTICE_LABELS = {'ready': '발송 대기', 'deferred': '재시도 대기',
@@ -310,6 +319,8 @@ Slack 알림은 대기열에 기록되며, 별도 설정된 테스트 발송기�
         created = record_test_order(order_id, scenario=scenario)
     except ValueError as exc:
         if str(exc) == 'Synthetic scenario conflicts with existing order':
+            if request.args.get('view') == 'html':
+                return render_template_string(TRACKING_CREATION_CONFLICT, order_id=order_id), 409
             abort(409)
         abort(400)
     if request.args.get('view') == 'html':
