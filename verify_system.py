@@ -872,11 +872,33 @@ def main():
                     self.assertLess(timeline.index('<li>TEST_CREATED<small>'),
                                     timeline.index('<li>TEST_PREPARED<small>'))
                     self.assertIn('현재 상태: <strong>TEST_PREPARED</strong>', timeline)
+                    with cafe24.database() as conn:
+                        before_recovery = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
+                                                for table in ('ourisul_test_orders', 'ourisul_test_order_item',
+                                                              'ourisul_test_order_state', 'ourisul_test_order_event',
+                                                              'ourisul_order_notice'))
+                    unknown_id = 'TEST-' + '0' * 32
+                    for query in ({'order_id': 'invalid'}, {}):
+                        recovery = self.get('/admin/orders/test/lookup', query_string=query)
+                        self.assertEqual(recovery.status_code, 404)
+                        self.assertIn('합성 주문을 찾을 수 없습니다', recovery.get_data(as_text=True))
+                        self.assertIn('href="/admin/orders/test?view=html"', recovery.get_data(as_text=True))
+                        self.assertIn('noindex,nofollow', recovery.get_data(as_text=True))
+                        self.assertEqual(recovery.headers['Cache-Control'], 'no-store')
+                        self.assertEqual(recovery.headers['Referrer-Policy'], 'no-referrer')
                     self.assertEqual(self.get('/admin/orders/test/lookup',
-                                              query_string={'order_id': 'invalid'}).status_code, 404)
-                    self.assertEqual(self.get('/admin/orders/test/lookup').status_code, 404)
-                    self.assertEqual(self.get('/admin/orders/test/' + 'TEST-' + '0' * 32 +
-                                              '/history?view=html').status_code, 404)
+                                              query_string={'order_id': unknown_id}).status_code, 303)
+                    recovery = self.get(f'/admin/orders/test/{unknown_id}/history?view=html')
+                    self.assertEqual(recovery.status_code, 404)
+                    self.assertIn('합성 주문을 찾을 수 없습니다', recovery.get_data(as_text=True))
+                    self.assertIn('href="/admin/orders/test?view=html"', recovery.get_data(as_text=True))
+                    self.assertEqual(self.get(f'/admin/orders/test/{unknown_id}/history').status_code, 404)
+                    with cafe24.database() as conn:
+                        after_recovery = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
+                                               for table in ('ourisul_test_orders', 'ourisul_test_order_item',
+                                                             'ourisul_test_order_state', 'ourisul_test_order_event',
+                                                             'ourisul_order_notice'))
+                    self.assertEqual(after_recovery, before_recovery)
                     legacy_id = 'TEST-' + secrets.token_hex(16)
                     with cafe24.database() as conn:
                         conn.execute("INSERT INTO ourisul_test_orders (order_id, status, item_count) "
