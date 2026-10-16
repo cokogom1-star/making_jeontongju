@@ -1,5 +1,19 @@
 # Handoff
 
+## Combined synthetic order rehearsal verification
+
+The isolated PostgreSQL verifier now follows one fictional basket through the
+admin HTML creation POST, persisted snapshot, exact-ID synthetic sender CLI,
+mocked timeout and deferred retry, mocked successful retry, exact creation
+replay, three HTTP status transitions, and final snapshot lookup. It checks
+that an early retry and a post-delivery retry issue no HTTP request, a Cafe24
+notice remains unchanged, a creation replay preserves the delivered notice,
+transition request keys do not duplicate events, and the final snapshot GET
+does not mutate any of the five synthetic-order tables. The fake webhook only
+receives the selected ID-only test message. This covers the composed rehearsal
+path with synthetic adapters; it does not establish real Slack receipt,
+carrier delivery, or production order readiness.
+
 ## Admin synthetic order snapshot
 
 `GET /admin/orders/test/<TEST-ID>/history?view=snapshot` returns the saved
