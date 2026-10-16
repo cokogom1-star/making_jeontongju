@@ -119,6 +119,14 @@ TRACKING_CREATION_CONFLICT = ('''<!doctype html><html lang="ko"><head><meta char
 <p><a href="{{url_for('test_orders.create_test_order', view='html')}}">새 합성 주문 시작하기</a></p>
 </main></body></html>''')
 
+TRACKING_NOT_FOUND = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>합성 주문 조회 확인 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>합성 주문을 찾을 수 없습니다</h1>
+<p>주문 ID를 확인하고 다시 조회해 주세요. 합성 주문 ID는 TEST-로 시작합니다.</p>
+<p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 다시 조회하기</a></p>
+</main></body></html>''')
+
 NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 발송 처리',
                'TEST_DELIVERED': '합성 배송 완료'}
 NOTICE_LABELS = {'ready': '발송 대기', 'deferred': '재시도 대기',
@@ -335,7 +343,7 @@ def lookup_test_order():
     """Navigate to a read-only synthetic status page without changing the DB."""
     order_id = request.args.get('order_id', '')
     if not isinstance(order_id, str) or not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id):
-        abort(404)
+        return render_template_string(TRACKING_NOT_FOUND), 404
     return redirect(url_for('test_orders.test_order_history', order_id=order_id,
                             view='html'), code=303)
 
@@ -359,8 +367,12 @@ def test_order_history(order_id):
         try:
             result = fulfillment.history(order_id)
         except ValueError:
+            if request.args.get('view') == 'html':
+                return render_template_string(TRACKING_NOT_FOUND), 404
             abort(404)
         if result is None:
+            if request.args.get('view') == 'html':
+                return render_template_string(TRACKING_NOT_FOUND), 404
             abort(404)
         if request.args.get('view') == 'html':
             if not session.get('test_order_csrf'):

@@ -1,5 +1,18 @@
 # Handoff
 
+## Admin synthetic lookup recovery
+
+The administrator-only synthetic order lookup now returns a Korean 404 recovery
+page for a missing or malformed ID. A correctly shaped ID absent from the
+status history also returns that page from the HTML timeline route. Both pages
+link back to `/admin/orders/test?view=html` so an administrator can retry the
+lookup. The successful lookup still redirects to the timeline. JSON history
+continues to return its existing 404 response. The existing authentication,
+test-order gate, no-store/no-referrer headers and read-only lookup behavior
+remain in force. The isolated PostgreSQL verifier checks malformed, missing,
+unknown and valid IDs, the recovery link, JSON compatibility and unchanged
+synthetic table counts. This change does not activate purchases or delivery.
+
 ## Combined synthetic order rehearsal verification
 
 The isolated PostgreSQL verifier now follows one fictional basket through the
