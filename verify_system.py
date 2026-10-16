@@ -626,6 +626,128 @@ def main():
                         conn.execute('DROP TABLE ourisul_test_order_item')
                     self.assertEqual(self.get(created.headers['Location']).status_code, 503)
 
+                def test_synthetic_basket_rehearsal_from_form_through_retry_and_snapshot(self):
+                    form_path = '/admin/orders/test?view=html'
+                    self.assertEqual(self.get(form_path).status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                        order_id = sess['test_scenario_order_id']
+                    basket = {'csrf': csrf, 'order_id': order_id, 'scenario': 'fixed-v1',
+                              'SYNTHETIC-CHEONGJU': '2', 'SYNTHETIC-TAKJU': '1'}
+                    created = self.post(form_path, data=basket)
+                    self.assertEqual(created.status_code, 303)
+                    snapshot_path = f'/admin/orders/test/{order_id}/history?view=snapshot'
+                    initial = self.get(snapshot_path).json
+                    self.assertEqual((initial['is_test'], initial['source'], initial['status'],
+                                      initial['version']), (True, 'synthetic', 'TEST_CREATED', 0))
+                    self.assertEqual(initial['items'], [
+                        {'id': 'SYNTHETIC-CHEONGJU', 'name': '가상 청주', 'quantity': 2},
+                        {'id': 'SYNTHETIC-TAKJU', 'name': '가상 탁주', 'quantity': 1}])
+                    self.assertEqual((initial['notice']['state'], initial['notice']['attempts']),
+                                     ('ready', 0))
+                    real_id = 'VERIFY-OTHER-ORDER'
+                    self.assertEqual(notices.record_orders('cafe24', [
+                        {'order_id': real_id, 'status': 'N10',
+                         'ordered_at': '2026-10-15T00:00:00Z', 'item_count': 1}],
+                        cafe24.database), 1)
+                    with cafe24.database() as conn:
+                        real_before = conn.execute('''SELECT * FROM ourisul_order_notice
+                            WHERE source='cafe24' AND order_id=%s''', (real_id,)).fetchone()
+                    webhook = 'https://hooks.slack.com/services/TEST/TEST/SYNTHETIC'
+                    fake_post = Mock(side_effect=[requests.Timeout(), response()])
+                    actual_sender = notices.deliver_synthetic_pending
+
+                    def fake_network_sender(connect, selected_id):
+                        return actual_sender(connect, selected_id, post=fake_post)
+
+                    def run_sender():
+                        # CLI checks a distinct production identity; the Flask app
+                        # keeps its isolated DATABASE_URL outside this narrow call.
+                        with patch.dict(os.environ, {
+                                'DATABASE_URL': 'postgresql://dummy@localhost/production'}):
+                            return send_synthetic_orders.run(['--send', order_id])
+
+                    with patch.dict(os.environ, {
+                            'VERIFY_DATABASE_URL': isolated_dsn,
+                            'SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED': 'true',
+                            'SLACK_TEST_ORDER_WEBHOOK_URL': webhook,
+                            'SLACK_ORDER_WEBHOOK_URL':
+                                'https://hooks.slack.com/services/TEST/TEST/REAL'}), \
+                            patch.object(notices, 'deliver_synthetic_pending',
+                                         side_effect=fake_network_sender):
+                        self.assertEqual(run_sender(),
+                                         {'delivered': 0, 'failed': 1})
+                        deferred = self.get(snapshot_path).json
+                        self.assertEqual((deferred['notice']['state'],
+                                          deferred['notice']['attempts']), ('deferred', 1))
+                        self.assertIn('retry_at', deferred['notice'])
+                        self.assertEqual(run_sender(),
+                                         {'delivered': 0, 'failed': 0})
+                        self.assertEqual(fake_post.call_count, 1)
+                        with cafe24.database() as conn:
+                            conn.execute('''UPDATE ourisul_order_notice
+                                SET next_attempt_at=now()-interval '1 second'
+                                WHERE source='synthetic' AND order_id=%s''', (order_id,))
+                        self.assertEqual(run_sender(),
+                                         {'delivered': 1, 'failed': 0})
+                        self.assertEqual(run_sender(),
+                                         {'delivered': 0, 'failed': 0})
+                    self.assertEqual(fake_post.call_count, 2)
+                    for call in fake_post.call_args_list:
+                        self.assertEqual(call.args, (webhook,))
+                        self.assertEqual(call.kwargs['json'],
+                                         {'text': f'[테스트·미운영] {order_id}'})
+                    delivered = self.get(snapshot_path).json
+                    self.assertEqual((delivered['notice']['state'],
+                                      delivered['notice']['attempts']), ('delivered', 2))
+                    self.assertIn('delivered_at', delivered['notice'])
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_order_notice', 'ourisul_test_order_state',
+                              'ourisul_test_order_event')
+                    with cafe24.database() as conn:
+                        before_replay = {table: conn.execute(
+                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                            for table in tables}
+                    self.assertEqual(self.post(form_path, data=basket).status_code, 303)
+                    self.assertEqual(self.get(snapshot_path).json['notice'], delivered['notice'])
+                    with cafe24.database() as conn:
+                        after_replay = {table: conn.execute(
+                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                            for table in tables}
+                    self.assertEqual(after_replay, before_replay)
+                    history_path = f'/admin/orders/test/{order_id}/history'
+                    for version, status in enumerate(('TEST_PREPARED', 'TEST_SHIPPED',
+                                                      'TEST_DELIVERED')):
+                        payload = {'csrf': csrf, 'status': status,
+                                   'expected_version': str(version),
+                                   'request_key': f'e2e-{version}'}
+                        advanced = self.post(history_path, data=payload)
+                        self.assertEqual(advanced.json,
+                                         {'status': status, 'version': version + 1,
+                                          'created': True})
+                        self.assertEqual(self.post(history_path, data=payload).json,
+                                         {'status': status, 'version': version + 1,
+                                          'created': False})
+                    with cafe24.database() as conn:
+                        real_after = conn.execute('''SELECT * FROM ourisul_order_notice
+                            WHERE source='cafe24' AND order_id=%s''', (real_id,)).fetchone()
+                        before_read = {table: conn.execute(
+                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                            for table in tables}
+                    self.assertEqual(real_after, real_before)
+                    final = self.get(snapshot_path).json
+                    self.assertEqual((final['status'], final['version']), ('TEST_DELIVERED', 3))
+                    self.assertEqual([event['to_status'] for event in final['events']],
+                                     ['TEST_CREATED', 'TEST_PREPARED', 'TEST_SHIPPED',
+                                      'TEST_DELIVERED'])
+                    self.assertEqual(final['items'], initial['items'])
+                    self.assertEqual(final['notice'], delivered['notice'])
+                    with cafe24.database() as conn:
+                        after_read = {table: conn.execute(
+                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                            for table in tables}
+                    self.assertEqual(after_read, before_read)
+
                 def test_synthetic_scenario_item_failure_rolls_back_everything(self):
                     self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
                     with self.client.session_transaction() as sess:
