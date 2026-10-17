@@ -908,7 +908,7 @@ def main():
                     with cafe24.database() as conn:
                         self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_state '
                                                       'WHERE order_id=%s', (legacy_id,)).fetchone()[0], 0)
-                    with patch.object(fulfillment, 'history', return_value={
+                    with patch.object(fulfillment, 'history_in_connection', return_value={
                             'order_id': order_id, 'status': '<script>alert(1)</script>',
                             'version': 0, 'events': [{'version': 0, 'from_status': None,
                                                        'to_status': '<b>unsafe</b>',
@@ -918,14 +918,14 @@ def main():
                     self.assertNotIn('<b>unsafe</b>', escaped)
                     self.assertNotIn('<img src=x>', escaped)
                     self.assertIn('&lt;b&gt;unsafe&lt;/b&gt;', escaped)
-                    with patch.object(notices, 'synthetic_notice_status', return_value={
+                    with patch.object(notices, 'synthetic_notice_status_in_connection', return_value={
                             'state': '<img src=x onerror=alert(1)>'}):
                         escaped_notice = self.get(path).get_data(as_text=True)
                     self.assertNotIn('<img src=x onerror=alert(1)>', escaped_notice)
                     self.assertIn('&lt;img src=x onerror=alert(1)&gt;', escaped_notice)
                     self.assertIn('알 수 없는 상태', escaped_notice)
                     self.assertNotIn('발송 작업 시도 횟수', escaped_notice)
-                    with patch.object(notices, 'synthetic_notice_status', return_value={
+                    with patch.object(notices, 'synthetic_notice_status_in_connection', return_value={
                             'state': 'deferred', 'attempts': '<b>2</b>',
                             'retry_at': '2026-10-12T01:00:00+00:00" onmouseover="alert(1)'}):
                         escaped_metadata = self.get(path).get_data(as_text=True)
@@ -933,7 +933,7 @@ def main():
                     self.assertIn('&lt;b&gt;2&lt;/b&gt;', escaped_metadata)
                     self.assertNotIn('onmouseover="alert(1)"', escaped_metadata)
                     self.assertIn('onmouseover=&#34;alert(1)', escaped_metadata)
-                    with patch.object(notices, 'synthetic_notice_status', return_value={
+                    with patch.object(notices, 'synthetic_notice_status_in_connection', return_value={
                             'state': 'deferred'}):
                         incomplete = self.get(path).get_data(as_text=True)
                     self.assertNotIn('재시도 예정 시각', incomplete)
@@ -999,7 +999,7 @@ def main():
                     order_id = 'TEST-' + secrets.token_hex(16)
                     self.assertTrue(test_orders.record_test_order(order_id))
                     path = f'/admin/orders/test/{order_id}/history?view=html'
-                    with patch.object(notices, 'synthetic_notice_status', side_effect=ValueError(
+                    with patch.object(notices, 'synthetic_notice_status_in_connection', side_effect=ValueError(
                             'Synthetic order tables are not initialized')):
                         self.assertEqual(self.get(path).status_code, 503)
                     self.assertEqual(self.get(path).status_code, 200)
