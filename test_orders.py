@@ -87,7 +87,7 @@ TRACKING_HISTORY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8
 {% if notice.state == 'delivered' and notice.delivered_at is defined and notice.delivered_at is not none %}
 <dt>전송 기록 시각</dt><dd><time datetime="{{notice.delivered_at}}">{{notice.delivered_at}}</time></dd>{% endif %}
 </dl>
-<small>시각은 각 값에 표시된 ISO 시간대 오프셋을 따릅니다. 배송 이력과 알림은 별도 시점에 조회됩니다. ready는 발송 전 대기 상태이며,
+<small>시각은 각 값에 표시된 ISO 시간대 오프셋을 따릅니다. 배송 이력·가상 품목·알림은 같은 조회 시점의 기록입니다. ready는 발송 전 대기 상태이며,
 delivered도 대기열의 전송 기록일 뿐 실제 Slack 수신을 보장하지 않습니다.</small>
 <h2>변경 이력</h2><ol>{% for event in history.events %}
 <li>{{event.to_status}}<small>버전 {{event.version}} · {{event.created_at}}</small></li>
@@ -353,47 +353,41 @@ def lookup_test_order():
 def test_order_history(order_id):
     """Read or advance a simulated delivery status; no carrier is contacted."""
     if request.method == 'GET':
-        if request.args.get('view') == 'snapshot':
+        view = request.args.get('view')
+        if view in ('snapshot', 'html'):
             try:
                 snapshot = order_snapshot(order_id)
             except ValueError as exc:
                 if str(exc) in ('Synthetic order tables are not initialized',
                                 'Synthetic item table not initialized'):
                     abort(503)
+                if view == 'html':
+                    return render_template_string(TRACKING_NOT_FOUND), 404
                 abort(404)
             if snapshot is None:
+                if view == 'html':
+                    return render_template_string(TRACKING_NOT_FOUND), 404
                 abort(404)
-            return snapshot
-        try:
-            result = fulfillment.history(order_id)
-        except ValueError:
-            if request.args.get('view') == 'html':
-                return render_template_string(TRACKING_NOT_FOUND), 404
-            abort(404)
-        if result is None:
-            if request.args.get('view') == 'html':
-                return render_template_string(TRACKING_NOT_FOUND), 404
-            abort(404)
-        if request.args.get('view') == 'html':
+            if view == 'snapshot':
+                return snapshot
             if not session.get('test_order_csrf'):
                 session['test_order_csrf'] = secrets.token_urlsafe(32)
-            next_status = fulfillment.STEPS.get(result['status'])
-            try:
-                notice = notices.synthetic_notice_status(database, order_id)
-                items = scenario_items(order_id)
-            except ValueError as exc:
-                if str(exc) not in ('Synthetic order tables are not initialized',
-                                    'Synthetic item table not initialized'):
-                    raise
-                abort(503)
-            return render_template_string(TRACKING_HISTORY, history=result, notice=notice,
-                                          scenario_items=items,
+            next_status = fulfillment.STEPS.get(snapshot['status'])
+            notice = snapshot['notice']
+            return render_template_string(TRACKING_HISTORY, history=snapshot, notice=notice,
+                                          scenario_items=snapshot['items'],
                                           notice_label=NOTICE_LABELS.get(notice.get('state'),
                                                                          '알 수 없는 상태'),
                                           next_status=next_status,
                                           next_label=NEXT_LABELS.get(next_status),
                                           csrf=session['test_order_csrf'],
                                           request_key=secrets.token_urlsafe(24))
+        try:
+            result = fulfillment.history(order_id)
+        except ValueError:
+            abort(404)
+        if result is None:
+            abort(404)
         return result
     token = session.get('test_order_csrf', '')
     if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
