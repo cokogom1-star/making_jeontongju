@@ -13,9 +13,11 @@ from coupang import KST, configured as coupang_configured, demo_orders, order_su
 from prelaunch import dry_run
 from direct_checkout import bp as direct_checkout_bp, enabled as direct_checkout_test_enabled
 from test_orders import bp as test_orders_bp
+from channel_inbox import bp as channel_inbox_bp
 init_app(app)
 app.register_blueprint(direct_checkout_bp)
 app.register_blueprint(test_orders_bp)
+app.register_blueprint(channel_inbox_bp)
 
 
 def store_live():

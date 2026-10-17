@@ -1,5 +1,20 @@
 # Handoff
 
+## Private saved channel order inbox (proposed)
+
+`GET /admin/orders/channels` reads only persisted Cafe24/Coupang notice summaries
+through the existing administrator Basic authentication. It shows at most 25
+records per page using a strict `(created_at, source, order_id)` cursor and
+excludes synthetic notices. The page shows channel, order ID, original saved
+status, channel-provided order time, and database save time; it does not show
+customer data or outbox delivery details. `record_orders` ignores repeats, so
+the saved status is from the **first collection**, not the latest channel state.
+The page states this and does not imply live payment or fulfillment status.
+Reads use a read-only PostgreSQL transaction and do not initialize tables,
+call providers, or repair data. An absent notice table yields 503. Verification
+must use a disposable `VERIFY_DATABASE_URL`; no production database is used.
+
+
 ## Consistent synthetic delivery timeline
 
 The administrator HTML timeline now reads simulated status, fictional basket

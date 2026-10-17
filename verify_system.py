@@ -1786,6 +1786,69 @@ def main():
                     with cafe24.database() as conn:
                         self.assertEqual(conn.execute('SELECT attempts, delivered_at IS NOT NULL FROM ourisul_order_notice').fetchone(), (2, True))
 
+                def test_channel_inbox_is_private_bounded_historical_and_read_only(self):
+                    path = '/admin/orders/channels'
+                    self.assertEqual(self.client.get(path).status_code, 401)
+                    stamp = datetime(2026, 10, 1, tzinfo=timezone.utc)
+                    with cafe24.database() as conn:
+                        for i in range(27):
+                            conn.execute('''INSERT INTO ourisul_order_notice
+                                (source, order_id, status, ordered_at, item_count, created_at)
+                                VALUES (%s, %s, %s, %s, 0, %s)''',
+                                ('cafe24' if i % 2 else 'coupang', f'INBOX-{i:02}',
+                                 '<script>alert(1)</script>' if i == 26 else 'FIRST',
+                                 '2026-10-01T00:00:00Z', stamp))
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count, created_at)
+                            VALUES ('synthetic', 'TEST-inbox', 'TEST', '2026-10-01', 0, %s)''', (stamp,))
+                    self.assertEqual(notices.record_orders('cafe24', [{
+                        'order_id': 'INBOX-01', 'status': 'CHANGED',
+                        'ordered_at': '2026-10-02T00:00:00Z', 'item_count': 9,
+                    }], cafe24.database), 0)
+                    with cafe24.database() as conn:
+                        before = conn.execute('''SELECT source, order_id, status, ordered_at, item_count,
+                            created_at, delivered_at, attempts, next_attempt_at, lease_until
+                            FROM ourisul_order_notice ORDER BY source, order_id''').fetchall()
+                    first = self.get(path)
+                    self.assertEqual(first.status_code, 200)
+                    self.assertEqual(first.headers['Cache-Control'], 'no-store')
+                    self.assertEqual(first.headers['Referrer-Policy'], 'no-referrer')
+                    html = first.get_data(as_text=True)
+                    self.assertIn('최초 수집 당시', html)
+                    self.assertIn('이후 변경은 반영되지 않을 수 있습니다', html)
+                    self.assertNotIn('CHANGED', html)
+                    self.assertEqual(html.count('<tr><td>'), 25)
+                    self.assertNotIn('TEST-inbox', html)
+                    self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', html)
+                    self.assertNotIn('<script>alert(1)</script>', html)
+                    from html import unescape
+                    link = re.search(r'<a href="([^"]+)">이전 기록 보기 →</a>', html)
+                    self.assertIsNotNone(link)
+                    second = self.get(unescape(link.group(1)))
+                    self.assertEqual(second.status_code, 200)
+                    self.assertEqual(second.get_data(as_text=True).count('<tr><td>'), 2)
+                    self.assertNotIn('이전 기록 보기 →', second.get_data(as_text=True))
+                    first_ids = re.findall(r'<td>(INBOX-\d\d)</td>', html)
+                    second_ids = re.findall(r'<td>(INBOX-\d\d)</td>', second.get_data(as_text=True))
+                    self.assertEqual(len(first_ids), 25)
+                    self.assertEqual(len(second_ids), 2)
+                    self.assertEqual(set(first_ids + second_ids), {f'INBOX-{i:02}' for i in range(27)})
+                    self.assertEqual(len(set(first_ids + second_ids)), 27)
+                    self.assertEqual(self.get(path, query_string={'cursor': 'bad'}).status_code, 400)
+                    self.assertEqual(self.get(path + '?cursor=a&cursor=b').status_code, 400)
+                    self.assertEqual(self.get(path + '?cursor=').status_code, 400)
+                    self.assertEqual(self.get(path + '?limit=1000').status_code, 400)
+                    with cafe24.database() as conn:
+                        after = conn.execute('''SELECT source, order_id, status, ordered_at, item_count,
+                            created_at, delivered_at, attempts, next_attempt_at, lease_until
+                            FROM ourisul_order_notice ORDER BY source, order_id''').fetchall()
+                    self.assertEqual(before, after)
+                    with cafe24.database() as conn:
+                        conn.execute('DROP TABLE ourisul_order_notice')
+                    self.assertEqual(self.get(path).status_code, 503)
+                    with cafe24.database() as conn:
+                        self.assertIsNone(conn.execute("SELECT to_regclass('ourisul_order_notice')").fetchone()[0])
+
                 def test_network_default_deny(self):
                     with self.assertRaisesRegex(AssertionError, 'Unexpected external HTTP'):
                         requests.get('https://example.invalid/')
