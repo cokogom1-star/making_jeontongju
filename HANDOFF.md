@@ -1,5 +1,28 @@
 # Handoff
 
+## Consistent synthetic delivery timeline
+
+The administrator HTML timeline now reads simulated status, fictional basket
+items, and the synthetic Slack outbox from the same PostgreSQL repeatable-read,
+read-only transaction as `?view=snapshot`. A concurrent status transition or
+sender update can no longer make the page show a mixture of old and new values;
+the page's next-step form also uses the version from that same snapshot. The
+default JSON history response remains unchanged. Invalid, unknown, and
+pre-status-model orders still return a 404 recovery page in HTML, while a
+missing required item or notice table returns 503. Authentication, the
+synthetic-order gate, and private response headers remain in place. The
+isolated verifier forces another connection to commit a status, item, and
+notice update between the timeline's reads, then checks the whole rendered
+page reflects the original snapshot and a subsequent request reflects the
+new one. It also checks the gate and missing-table behavior.
+
+This remains a rehearsal, not customer checkout or shipment tracking. The
+next product milestone is an authenticated, read-only channel order inbox
+using already persisted Cafe24/Coupang order metadata, explicitly labeled as
+the last observed status rather than live fulfillment. Customer checkout
+still requires settled identity, age verification, inventory, payment,
+fulfillment, and channel reconciliation requirements.
+
 ## Admin synthetic lookup recovery
 
 The administrator-only synthetic order lookup now returns a Korean 404 recovery
