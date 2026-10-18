@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 38801)
+Total output lines: 2093
+
 #!/usr/bin/env python3
 """Offline application integration verifier using a dedicated real PostgreSQL DB.
 
@@ -106,12 +109,14 @@ def main():
                         cafe24.schema(conn)
                         direct_checkout.schema(conn)
                         notices.schema(conn)
+                        notices.channel_schema(conn)
                         test_orders.schema(conn)
                         fulfillment.schema(conn)
                         conn.execute('TRUNCATE ourisul_cafe24_token, ourisul_test_payments, '
                                      'ourisul_test_order_item, '
                                      'ourisul_test_order_event, ourisul_test_order_state, '
-                                     'ourisul_test_orders, ourisul_order_notice')
+                                     'ourisul_test_orders, ourisul_order_notice, '
+                                     'ourisul_channel_order_state, ourisul_channel_order_event')
                         cafe24.save_token(conn, {'access_token': 'synthetic-access',
                                                'refresh_token': 'synthetic-refresh'})
 
@@ -302,6 +307,94 @@ def main():
                         with self.assertRaises(ValueError):
                             coupang.order_summaries(start, start + timedelta(hours=24), get=fake_get)
                         self.assertEqual(fake_get.call_count, before)
+
+                def test_channel_observations_preserve_first_notice_and_deduplicate(self):
+                    def summary(status, order_id='OBS-1'):
+                        return {'order_id': order_id, 'status': status,
+                                'ordered_at': '2026-10-01T00:00:00Z', 'item_count': 1}
+                    self.assertEqual(notices.record_orders('cafe24', [summary('PAID')], cafe24.database), 1)
+                    with cafe24.database() as conn:
+                        conn.execute('''UPDATE ourisul_order_notice SET attempts = 3,
+                            delivered_at = now(), next_attempt_at = now() + interval '1 hour',
+                            lease_until = now() + interval '2 hours'
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''')
+                        before = conn.execute('''SELECT * FROM ourisul_order_notice
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''').fetchone()
+                    self.assertEqual(notices.record_orders('cafe24', [summary('PAID')], cafe24.database), 0)
+                    self.assertEqual(notices.record_orders('cafe24', [summary('SHIPPED')], cafe24.database), 0)
+                    self.assertEqual(notices.record_orders('cafe24', [summary('SHIPPED')], cafe24.database), 0)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT * FROM ourisul_order_notice
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''').fetchone(), before)
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_state
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''').fetchone(), ('SHIPPED',))
+                        events = conn.execute('''SELECT status, observed_at FROM ourisul_channel_order_event
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ORDER BY id''').fetchall()
+                        self.assertEqual([event[0] for event in events], ['PAID', 'SHIPPED'])
+                        self.assertEqual(events[0][1], before[5])
+                    # A duplicate ID retains its first notice and last observed status.
+                    self.assertEqual(notices.record_orders('cafe24',
+                        [summary('PAID', 'OBS-2'), summary('SHIPPED', 'OBS-2')], cafe24.database), 1)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_state
+                            WHERE source = 'cafe24' AND order_id = 'OBS-2' ''').fetchone(), ('SHIPPED',))
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_order_notice
+                            WHERE source = 'cafe24' AND order_id = 'OBS-2' ''').fetchone(), ('PAID',))
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_event
+                            WHERE source = 'cafe24' AND order_id = 'OBS-2' ORDER BY id''').fetchall(),
+                            [('PAID',), ('SHIPPED',)])
+                    # An older notice gets its original database save time as its first event.
+                    with cafe24.database() as conn:
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count)
+                            VALUES ('coupang', 'LEGACY', 'ACCEPT', '2026-10-01', 1)''')
+                    self.assertEqual(notices.record_orders('coupang', [summary('SHIPPED', 'LEGACY')], cafe24.database), 0)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_event
+                            WHERE source = 'coupang' AND order_id = 'LEGACY' ORDER BY id''').fetchall(),
+                            [('ACCEPT',), ('SHIPPED',)])
+                        saved_at = conn.execute("SELECT created_at FROM ourisul_order_notice WHERE order_id = 'LEGACY'").fetchone()[0]
+                        first_at = conn.execute("SELECT observed_at FROM ourisul_channel_order_event WHERE order_id = 'LEGACY' ORDER BY id LIMIT 1").fetchone()[0]
+                        self.assertEqual(first_at, saved_at)
+                    self.assertNotIn('SHIPPED', self.get('/admin/orders/channels').get_data(as_text=True))
+
+                def test_channel_observation_batch_rollback_and_concurrent_replay(self):
+                    row = lambda status, order_id: {'order_id': order_id, 'status': status,
+                        'ordered_at': '2026-10-01T00:00:00Z', 'item_count': 1}
+                    with self.assertRaises(ValueError):
+                        notices.record_orders('cafe24', [row('PAID', 'VALID'),
+                            row('INVALID STATUS', 'BAD')], cafe24.database)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute("SELECT count(*) FROM ourisul_order_notice WHERE order_id = 'VALID'").fetchone()[0], 0)
+                        conn.execute("ALTER TABLE ourisul_channel_order_event ADD CONSTRAINT reject_blocked CHECK (status <> 'BLOCKED')")
+                    with self.assertRaises(psycopg.errors.CheckViolation):
+                        notices.record_orders('cafe24', [row('PAID', 'A-ROLLBACK'),
+                            row('BLOCKED', 'Z-FAIL')], cafe24.database)
+                    with cafe24.database() as conn:
+                        for table in ('ourisul_order_notice', 'ourisul_channel_order_state',
+                                      'ourisul_channel_order_event'):
+                            self.assertEqual(conn.execute(f"SELECT count(*) FROM {table} WHERE order_id IN ('A-ROLLBACK', 'Z-FAIL')").fetchone()[0], 0)
+                        conn.execute('ALTER TABLE ourisul_channel_order_event DROP CONSTRAINT reject_blocked')
+                    barrier = Barrier(2)
+                    def record():
+                        barrier.wait()
+                        return notices.record_orders('cafe24', [row('PAID', 'RACE')], cafe24.database)
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        results = list(pool.map(lambda _: record(), range(2)))
+                    self.assertEqual(sorted(results), [0, 1])
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute("SELECT count(*) FROM ourisul_channel_order_event WHERE order_id = 'RACE'").fetchone()[0], 1)
+                    # Opposite batch order still takes row locks in the same order.
+                    barrier = Barrier(2)
+                    def record_pair(reverse):
+                        barrier.wait()
+                        ids = ('RACE-A', 'RACE-B')
+                        if reverse:
+                            ids = tuple(reversed(ids))
+                        return notices.record_orders('coupang', [row('PAID', key) for key in ids], cafe24.database)
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        results = list(pool.map(record_pair, (False, True)))
+                    self.assertEqual(sorted(results), [0, 2])
 
                 def test_payment_auth_csrf_and_disabled_gate(self):
                     self.assertEqual(self.client.get('/admin/payments/test').status_code, 401)
@@ -728,470 +821,7 @@ def main():
                         self.assertEqual(self.post(history_path, data=payload).json,
                                          {'status': status, 'version': version + 1,
                                           'created': False})
-                    with cafe24.database() as conn:
-                        real_after = conn.execute('''SELECT * FROM ourisul_order_notice
-                            WHERE source='cafe24' AND order_id=%s''', (real_id,)).fetchone()
-                        before_read = {table: conn.execute(
-                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
-                            for table in tables}
-                    self.assertEqual(real_after, real_before)
-                    final = self.get(snapshot_path).json
-                    self.assertEqual((final['status'], final['version']), ('TEST_DELIVERED', 3))
-                    self.assertEqual([event['to_status'] for event in final['events']],
-                                     ['TEST_CREATED', 'TEST_PREPARED', 'TEST_SHIPPED',
-                                      'TEST_DELIVERED'])
-                    self.assertEqual(final['items'], initial['items'])
-                    self.assertEqual(final['notice'], delivered['notice'])
-                    with cafe24.database() as conn:
-                        after_read = {table: conn.execute(
-                            f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
-                            for table in tables}
-                    self.assertEqual(after_read, before_read)
-
-                def test_synthetic_scenario_item_failure_rolls_back_everything(self):
-                    self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
-                    with self.client.session_transaction() as sess:
-                        csrf, order_id = sess['test_order_csrf'], sess['test_scenario_order_id']
-                    with cafe24.database() as conn:
-                        conn.execute("ALTER TABLE ourisul_test_order_item ADD CONSTRAINT reject_scenario "
-                                     "CHECK (item_id <> 'SYNTHETIC-CHEONGJU')")
-                    try:
-                        direct_id = 'TEST-' + secrets.token_hex(16)
-                        with self.assertRaises(psycopg.errors.CheckViolation):
-                            test_orders.record_test_order(
-                                direct_id, scenario={'SYNTHETIC-CHEONGJU': 1})
-                        failed = self.post('/admin/orders/test?view=html', data={
-                            'csrf': csrf, 'order_id': order_id, 'scenario': 'fixed-v1',
-                            'SYNTHETIC-CHEONGJU': '1', 'SYNTHETIC-TAKJU': '0'})
-                        self.assertEqual(failed.status_code, 502)
-                        with cafe24.database() as conn:
-                            for table in ('ourisul_test_orders', 'ourisul_test_order_item',
-                                          'ourisul_order_notice', 'ourisul_test_order_state',
-                                          'ourisul_test_order_event'):
-                                for checked_id in (direct_id, order_id):
-                                    self.assertEqual(conn.execute(f'SELECT count(*) FROM {table} '
-                                                                  'WHERE order_id=%s', (checked_id,)).fetchone()[0], 0)
-                    finally:
-                        with cafe24.database() as conn:
-                            conn.execute('ALTER TABLE ourisul_test_order_item DROP CONSTRAINT reject_scenario')
-
-                def test_synthetic_fulfillment_auth_gate_history_and_idempotency(self):
-                    self.assertEqual(self.get('/admin/orders/test').status_code, 200)
-                    with self.client.session_transaction() as sess:
-                        order_id, csrf = sess['test_order_id'], sess['test_order_csrf']
-                    self.assertTrue(test_orders.record_test_order(order_id))
-                    path = f'/admin/orders/test/{order_id}/history'
-                    self.assertEqual(self.client.get(path).status_code, 401)
-                    self.assertEqual(self.client.post(path, data={}).status_code, 401)
-                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
-                        self.assertEqual(self.get(path).status_code, 404)
-                        self.assertEqual(self.post(path, data={'csrf': csrf}).status_code, 404)
-                    self.assertEqual(self.post(path, data={'csrf': 'bad'}).status_code, 403)
-                    original = self.get(path)
-                    self.assertEqual(original.status_code, 200)
-                    self.assertEqual(original.json['status'], 'TEST_CREATED')
-                    self.assertEqual(len(original.json['events']), 1)
-                    with cafe24.database() as conn:
-                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 1)
-                    data = {'csrf': csrf, 'status': 'TEST_PREPARED',
-                            'expected_version': '0', 'request_key': 'prepare-once'}
-                    self.assertEqual(self.post(path, data=data).json,
-                                     {'status': 'TEST_PREPARED', 'version': 1, 'created': True})
-                    self.assertEqual(self.post(path, data=data).json,
-                                     {'status': 'TEST_PREPARED', 'version': 1, 'created': False})
-                    self.assertEqual(self.post(path, data=dict(data, status='TEST_SHIPPED')).status_code, 409)
-                    self.assertEqual(self.post(path, data=dict(data, request_key='stale')).status_code, 409)
-                    self.assertEqual(self.post(path, data=dict(data, status='TEST_DELIVERED',
-                                                               expected_version='1', request_key='skip')).status_code, 409)
-                    self.assertEqual(self.post(path, data=dict(data, status='TEST_SHIPPED',
-                                                               expected_version='1', request_key='ship-once')).status_code, 200)
-                    self.assertEqual(self.post(path, data=dict(data, status='TEST_DELIVERED',
-                                                               expected_version='2', request_key='deliver-once')).status_code, 200)
-                    self.assertEqual(self.post(path, data=data).json,
-                                     {'status': 'TEST_PREPARED', 'version': 1, 'created': False})
-                    final = self.get(path).json
-                    self.assertEqual((final['status'], final['version']), ('TEST_DELIVERED', 3))
-                    self.assertEqual([event['to_status'] for event in final['events']],
-                                     ['TEST_CREATED', 'TEST_PREPARED', 'TEST_SHIPPED', 'TEST_DELIVERED'])
-                    with cafe24.database() as conn:
-                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 4)
-                        self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_order_notice
-                            WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()[0], 1)
-
-                def test_synthetic_tracking_html_admin_flow_is_read_only(self):
-                    form_path = '/admin/orders/test?view=html'
-                    self.assertEqual(self.client.get(form_path).status_code, 401)
-                    self.assertEqual(self.client.get('/admin/orders/test/lookup').status_code, 401)
-                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
-                        self.assertEqual(self.get(form_path).status_code, 404)
-                        self.assertEqual(self.get('/admin/orders/test/lookup').status_code, 404)
-                    form = self.get(form_path)
-                    self.assertEqual(form.status_code, 200)
-                    self.assertIn('합성 주문 배송 조회', form.get_data(as_text=True))
-                    self.assertIn('name="viewport"', form.get_data(as_text=True))
-                    self.assertIn('max-width:720px', form.get_data(as_text=True))
-                    with self.client.session_transaction() as sess:
-                        csrf, order_id = sess['test_order_csrf'], sess['test_order_id']
-                    self.assertEqual(self.post(form_path, data={'csrf': 'bad'}).status_code, 403)
-                    created = self.post(form_path, data={'csrf': csrf, 'order_id': order_id})
-                    self.assertEqual(created.status_code, 303)
-                    self.assertEqual(created.headers['Location'],
-                                     f'/admin/orders/test/{order_id}/history?view=html')
-                    path = created.headers['Location']
-                    self.assertEqual(self.client.get(path).status_code, 401)
-                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
-                        self.assertEqual(self.get(path).status_code, 404)
-                    with cafe24.database() as conn:
-                        before = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
-                                       for table in ('ourisul_test_orders', 'ourisul_test_order_state',
-                                                     'ourisul_test_order_event', 'ourisul_order_notice'))
-                    page = self.get(path)
-                    self.assertEqual(page.status_code, 200)
-                    self.assertIn(order_id, page.get_data(as_text=True))
-                    self.assertIn('TEST_CREATED', page.get_data(as_text=True))
-                    self.assertIn('<dt>상태</dt><dd><strong>ready</strong> (발송 대기)</dd>',
-                                  page.get_data(as_text=True))
-                    self.assertIn('name="viewport"', page.get_data(as_text=True))
-                    self.assertIn('noindex,nofollow', page.get_data(as_text=True))
-                    self.assertEqual(page.headers['Cache-Control'], 'no-store')
-                    self.assertEqual(page.headers['Referrer-Policy'], 'no-referrer')
-                    lookup = self.get('/admin/orders/test/lookup', query_string={'order_id': order_id})
-                    self.assertEqual(lookup.status_code, 303)
-                    self.assertEqual(lookup.headers['Location'], path)
-                    self.assertEqual(self.get(f'/admin/orders/test/{order_id}/history').json['status'],
-                                     'TEST_CREATED')
-                    with cafe24.database() as conn:
-                        after = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
-                                      for table in ('ourisul_test_orders', 'ourisul_test_order_state',
-                                                    'ourisul_test_order_event', 'ourisul_order_notice'))
-                    self.assertEqual(after, before)
-                    self.assertEqual(self.post(f'/admin/orders/test/{order_id}/history', data={
-                        'csrf': csrf, 'status': 'TEST_PREPARED', 'expected_version': '0',
-                        'request_key': 'tracking-timeline'}).status_code, 200)
-                    timeline = self.get(path).get_data(as_text=True)
-                    self.assertLess(timeline.index('<li>TEST_CREATED<small>'),
-                                    timeline.index('<li>TEST_PREPARED<small>'))
-                    self.assertIn('현재 상태: <strong>TEST_PREPARED</strong>', timeline)
-                    with cafe24.database() as conn:
-                        before_recovery = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
-                                                for table in ('ourisul_test_orders', 'ourisul_test_order_item',
-                                                              'ourisul_test_order_state', 'ourisul_test_order_event',
-                                                              'ourisul_order_notice'))
-                    unknown_id = 'TEST-' + '0' * 32
-                    for query in ({'order_id': 'invalid'}, {}):
-                        recovery = self.get('/admin/orders/test/lookup', query_string=query)
-                        self.assertEqual(recovery.status_code, 404)
-                        self.assertIn('합성 주문을 찾을 수 없습니다', recovery.get_data(as_text=True))
-                        self.assertIn('href="/admin/orders/test?view=html"', recovery.get_data(as_text=True))
-                        self.assertIn('noindex,nofollow', recovery.get_data(as_text=True))
-                        self.assertEqual(recovery.headers['Cache-Control'], 'no-store')
-                        self.assertEqual(recovery.headers['Referrer-Policy'], 'no-referrer')
-                    self.assertEqual(self.get('/admin/orders/test/lookup',
-                                              query_string={'order_id': unknown_id}).status_code, 303)
-                    recovery = self.get(f'/admin/orders/test/{unknown_id}/history?view=html')
-                    self.assertEqual(recovery.status_code, 404)
-                    self.assertIn('합성 주문을 찾을 수 없습니다', recovery.get_data(as_text=True))
-                    self.assertIn('href="/admin/orders/test?view=html"', recovery.get_data(as_text=True))
-                    self.assertEqual(self.get(f'/admin/orders/test/{unknown_id}/history').status_code, 404)
-                    with cafe24.database() as conn:
-                        after_recovery = tuple(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
-                                               for table in ('ourisul_test_orders', 'ourisul_test_order_item',
-                                                             'ourisul_test_order_state', 'ourisul_test_order_event',
-                                                             'ourisul_order_notice'))
-                    self.assertEqual(after_recovery, before_recovery)
-                    legacy_id = 'TEST-' + secrets.token_hex(16)
-                    with cafe24.database() as conn:
-                        conn.execute("INSERT INTO ourisul_test_orders (order_id, status, item_count) "
-                                     "VALUES (%s, 'TEST_CREATED', 0)", (legacy_id,))
-                    self.assertEqual(self.get(f'/admin/orders/test/{legacy_id}/history?view=html').status_code,
-                                     404)
-                    with cafe24.database() as conn:
-                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_state '
-                                                      'WHERE order_id=%s', (legacy_id,)).fetchone()[0], 0)
-                    with patch.object(fulfillment, 'history_in_connection', return_value={
-                            'order_id': order_id, 'status': '<script>alert(1)</script>',
-                            'version': 0, 'events': [{'version': 0, 'from_status': None,
-                                                       'to_status': '<b>unsafe</b>',
-                                                       'created_at': '<img src=x>'}]}):
-                        escaped = self.get(path).get_data(as_text=True)
-                    self.assertNotIn('<script>', escaped)
-                    self.assertNotIn('<b>unsafe</b>', escaped)
-                    self.assertNotIn('<img src=x>', escaped)
-                    self.assertIn('&lt;b&gt;unsafe&lt;/b&gt;', escaped)
-                    with patch.object(notices, 'synthetic_notice_status_in_connection', return_value={
-                            'state': '<img src=x onerror=alert(1)>'}):
-                        escaped_notice = self.get(path).get_data(as_text=True)
-                    self.assertNotIn('<img src=x onerror=alert(1)>', escaped_notice)
-                    self.assertIn('&lt;img src=x onerror=alert(1)&gt;', escaped_notice)
-                    self.assertIn('알 수 없는 상태', escaped_notice)
-                    self.assertNotIn('발송 작업 시도 횟수', escaped_notice)
-                    with patch.object(notices, 'synthetic_notice_status_in_connection', return_value={
-                            'state': 'deferred', 'attempts': '<b>2</b>',
-                            'retry_at': '2026-10-12T01:00:00+00:00" onmouseover="alert(1)'}):
-                        escaped_metadata = self.get(path).get_data(as_text=True)
-                    self.assertNotIn('<b>2</b>', escaped_metadata)
-                    self.assertIn('&lt;b&gt;2&lt;/b&gt;', escaped_metadata)
-                    self.assertNotIn('onmouseover="alert(1)"', escaped_metadata)
-                    self.assertIn('onmouseover=&#34;alert(1)', escaped_metadata)
-                    with patch.object(notices, 'synthetic_notice_status_in_connection', return_value={
-                            'state': 'deferred'}):
-                        incomplete = self.get(path).get_data(as_text=True)
-                    self.assertNotIn('재시도 예정 시각', incomplete)
-
-                def test_synthetic_tracking_html_notice_states_are_read_only(self):
-                    ids = {state: 'TEST-' + secrets.token_hex(16) for state in
-                           ('ready', 'deferred', 'leased', 'delivered', 'missing')}
-                    for order_id in ids.values():
-                        self.assertTrue(test_orders.record_test_order(order_id))
-                    with cafe24.database() as conn:
-                        conn.execute('''UPDATE ourisul_order_notice SET
-                            next_attempt_at = now() + interval '5 minutes', attempts = 2
-                            WHERE source = 'synthetic' AND order_id = %s''', (ids['deferred'],))
-                        conn.execute('''UPDATE ourisul_order_notice SET
-                            lease_until = now() + interval '5 minutes', attempts = 3
-                            WHERE source = 'synthetic' AND order_id = %s''', (ids['leased'],))
-                        conn.execute('''UPDATE ourisul_order_notice SET delivered_at = now(), attempts = 4
-                            WHERE source = 'synthetic' AND order_id = %s''', (ids['delivered'],))
-                        conn.execute('''DELETE FROM ourisul_order_notice
-                            WHERE source = 'synthetic' AND order_id = %s''', (ids['missing'],))
-                        before = conn.execute('''SELECT source, order_id, attempts, delivered_at,
-                            next_attempt_at, lease_until FROM ourisul_order_notice
-                            ORDER BY source, order_id''').fetchall()
-                    labels = {'ready': '발송 대기', 'deferred': '재시도 대기',
-                              'leased': '발송 작업 점유 중', 'delivered': '전송 기록 완료',
-                              'missing': '알림 기록 없음'}
-                    times = {'deferred': ('재시도 예정 시각', 'retry_at'),
-                             'leased': ('발송 점유 만료 시각', 'lease_until'),
-                             'delivered': ('전송 기록 시각', 'delivered_at')}
-                    with patch.object(requests.sessions.Session, 'request',
-                                      side_effect=AssertionError('Timeline must not use HTTP')) as http_request:
-                        for state, order_id in ids.items():
-                            path = f'/admin/orders/test/{order_id}/history'
-                            page = self.get(path + '?view=html')
-                            self.assertEqual(page.status_code, 200)
-                            html = page.get_data(as_text=True)
-                            self.assertIn(f'<dt>상태</dt><dd><strong>{state}</strong> '
-                                          f'({labels[state]})</dd>', html)
-                            self.assertIn('name="viewport"', html)
-                            self.assertIn('focus-visible', html)
-                            if state == 'missing':
-                                self.assertNotIn('발송 작업 시도 횟수', html)
-                            else:
-                                expected = {'ready': 0, 'deferred': 2, 'leased': 3,
-                                            'delivered': 4}[state]
-                                self.assertIn(f'<dt>발송 작업 시도 횟수</dt><dd>{expected}회 (작업 점유 포함)</dd>', html)
-                            inspected = notices.synthetic_notice_status(cafe24.database, order_id)
-                            for candidate, (label, key) in times.items():
-                                if state == candidate:
-                                    self.assertIn(f'<dt>{label}</dt><dd><time datetime="'
-                                                  f'{inspected[key]}">{inspected[key]}</time></dd>', html)
-                                else:
-                                    self.assertNotIn(label, html)
-                            self.assertNotIn('notice', self.get(path).json)
-                        http_request.assert_not_called()
-                    with cafe24.database() as conn:
-                        after = conn.execute('''SELECT source, order_id, attempts, delivered_at,
-                            next_attempt_at, lease_until FROM ourisul_order_notice
-                            ORDER BY source, order_id''').fetchall()
-                    self.assertEqual(after, before)
-
-                def test_synthetic_tracking_html_uninitialized_notice_table_is_unavailable(self):
-                    order_id = 'TEST-' + secrets.token_hex(16)
-                    self.assertTrue(test_orders.record_test_order(order_id))
-                    path = f'/admin/orders/test/{order_id}/history?view=html'
-                    with patch.object(notices, 'synthetic_notice_status_in_connection', side_effect=ValueError(
-                            'Synthetic order tables are not initialized')):
-                        self.assertEqual(self.get(path).status_code, 503)
-                    self.assertEqual(self.get(path).status_code, 200)
-
-                def test_synthetic_tracking_html_transition_controls(self):
-                    self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
-                    with self.client.session_transaction() as sess:
-                        order_id, csrf = sess['test_order_id'], sess['test_order_csrf']
-                    self.assertTrue(test_orders.record_test_order(order_id))
-                    path = f'/admin/orders/test/{order_id}/history?view=html'
-                    page = self.get(path)
-                    self.assertEqual(page.status_code, 200)
-
-                    def form_data(response):
-                        html = response.get_data(as_text=True)
-                        values = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">',
-                                                 html))
-                        self.assertEqual(set(values), {'csrf', 'status', 'expected_version', 'request_key'})
-                        return values
-
-                    initial = form_data(page)
-                    self.assertNotEqual(initial['request_key'], form_data(self.get(path))['request_key'])
-                    self.assertEqual(initial['csrf'], csrf)
-                    self.assertEqual((initial['status'], initial['expected_version']),
-                                     ('TEST_PREPARED', '0'))
-                    self.assertIn('합성 준비 완료', page.get_data(as_text=True))
-                    self.assertEqual(self.post(path, data=dict(initial, csrf='bad')).status_code, 403)
-                    invalid = self.post(path, data=dict(initial, status='TEST_DELIVERED'))
-                    self.assertEqual(invalid.status_code, 409)
-                    self.assertIn('최신 상태 보기', invalid.get_data(as_text=True))
-                    self.assertEqual(fulfillment.history(order_id)['version'], 0)
-                    prepared = self.post(path, data=initial)
-                    self.assertEqual((prepared.status_code, prepared.headers['Location']), (303, path))
-                    self.assertEqual(self.post(path, data=initial).status_code, 303)
-                    stale_form = form_data(self.get(path))
-                    self.assertEqual((stale_form['status'], stale_form['expected_version']),
-                                     ('TEST_SHIPPED', '1'))
-                    self.assertIn('합성 발송 처리', self.get(path).get_data(as_text=True))
-                    stale = self.post(path, data=dict(initial, request_key='stale-form'))
-                    self.assertEqual(stale.status_code, 409)
-                    self.assertIn(path, stale.get_data(as_text=True))
-                    self.assertEqual(self.post(path, data=stale_form).status_code, 303)
-                    shipped_form = form_data(self.get(path))
-                    self.assertEqual((shipped_form['status'], shipped_form['expected_version']),
-                                     ('TEST_DELIVERED', '2'))
-                    self.assertIn('합성 배송 완료', self.get(path).get_data(as_text=True))
-                    self.assertEqual(self.post(path, data=shipped_form).status_code, 303)
-                    final = self.get(path).get_data(as_text=True)
-                    self.assertIn('현재 상태: <strong>TEST_DELIVERED</strong>', final)
-                    self.assertNotIn('name="request_key"', final)
-                    self.assertIn('합성 배송 시연이 완료되었습니다.', final)
-                    self.assertEqual(self.get(path.split('?')[0]).json['version'], 3)
-                    with cafe24.database() as conn:
-                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event '
-                                                      'WHERE order_id=%s', (order_id,)).fetchone()[0], 4)
-                    with self.client.session_transaction() as sess:
-                        sess.pop('test_order_csrf')
-                    direct_id = 'TEST-' + secrets.token_hex(16)
-                    self.assertTrue(test_orders.record_test_order(direct_id))
-                    direct_path = f'/admin/orders/test/{direct_id}/history?view=html'
-                    direct = self.get(direct_path)
-                    self.assertEqual(direct.status_code, 200)
-                    with self.client.session_transaction() as sess:
-                        self.assertEqual(form_data(direct)['csrf'], sess['test_order_csrf'])
-                    self.assertEqual(self.post(direct_path, data=form_data(direct)).status_code, 303)
-
-                def test_synthetic_fulfillment_rejects_unknown_and_bad_input_without_writes(self):
-                    self.assertEqual(self.get('/admin/orders/test').status_code, 200)
-                    with self.client.session_transaction() as sess:
-                        csrf = sess['test_order_csrf']
-                    order_id = 'TEST-' + secrets.token_hex(16)
-                    path = f'/admin/orders/test/{order_id}/history'
-                    self.assertEqual(self.get(path).status_code, 404)
-                    self.assertEqual(self.post(path, data={'csrf': csrf, 'status': 'TEST_PREPARED',
-                                                           'expected_version': '0', 'request_key': 'missing'}).status_code, 404)
-                    self.assertTrue(test_orders.record_test_order(order_id))
-                    for bad in ({'status': 'TEST_DELIVERED', 'expected_version': '0', 'request_key': 'skip'},
-                                {'status': 'TEST_PREPARED', 'expected_version': '-1', 'request_key': 'bad-version'},
-                                {'status': 'TEST_PREPARED', 'expected_version': '0', 'request_key': 'bad key'},
-                                {'status': 'TEST_PREPARED', 'expected_version': 'garbage', 'request_key': 'bad-int'}):
-                        self.assertIn(self.post(path, data={'csrf': csrf, **bad}).status_code, (400, 409))
-                    self.assertEqual(fulfillment.history(order_id)['version'], 0)
-                    with cafe24.database() as conn:
-                        self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 1)
-                        conn.execute('DROP TABLE ourisul_test_order_event, ourisul_test_order_state')
-                    self.assertEqual(self.get(path).status_code, 404)
-
-                def test_synthetic_fulfillment_history_uses_one_snapshot(self):
-                    order_id = 'TEST-' + secrets.token_hex(16)
-                    self.assertTrue(test_orders.record_test_order(order_id))
-                    reads = []
-
-                    @contextmanager
-                    def interleaved_read():
-                        with cafe24.database() as conn:
-                            class ReadConnection:
-                                def execute(self, query, params=None):
-                                    cursor = conn.execute(query, params)
-                                    reads.append(query)
-                                    if len(reads) == 1:
-                                        # Commit after the reader's first SELECT has captured
-                                        # its snapshot, before it consumes the cursor.
-                                        fulfillment.transition(order_id, 'TEST_PREPARED', 0,
-                                                               'during-history')
-                                    return cursor
-
-                            yield ReadConnection()
-
-                    snapshot = fulfillment.history(order_id, connect=interleaved_read)
-                    self.assertEqual(len(reads), 1)
-                    self.assertEqual((snapshot['status'], snapshot['version']),
-                                     ('TEST_CREATED', 0))
-                    self.assertEqual([(event['version'], event['to_status'])
-                                      for event in snapshot['events']],
-                                     [(0, 'TEST_CREATED')])
-                    latest = fulfillment.history(order_id)
-                    self.assertEqual((latest['status'], latest['version']),
-                                     ('TEST_PREPARED', 1))
-                    self.assertEqual([event['version'] for event in latest['events']], [0, 1])
-
-                def test_synthetic_order_snapshot_is_backed_private_and_read_only(self):
-                    order_id = 'TEST-' + secrets.token_hex(16)
-                    path = f'/admin/orders/test/{order_id}/history'
-                    self.assertEqual(self.client.get(path + '?view=snapshot').status_code, 401)
-                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
-                        self.assertEqual(self.get(path + '?view=snapshot').status_code, 404)
-                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 404)
-                    self.assertEqual(self.get('/admin/orders/test/bad/history?view=snapshot').status_code, 404)
-                    self.assertTrue(test_orders.record_test_order(order_id, scenario={
-                        'SYNTHETIC-CHEONGJU': 2, 'SYNTHETIC-TAKJU': 1}))
-                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
-                              'ourisul_order_notice', 'ourisul_test_order_state',
-                              'ourisul_test_order_event')
-                    with cafe24.database() as conn:
-                        before = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
-                                  for table in tables}
-                    snapshot = self.get(path + '?view=snapshot')
-                    self.assertEqual(snapshot.status_code, 200)
-                    self.assertEqual(snapshot.headers['Cache-Control'], 'no-store')
-                    self.assertEqual(snapshot.headers['Referrer-Policy'], 'no-referrer')
-                    data = snapshot.json
-                    self.assertEqual((data['order_id'], data['status'], data['version']),
-                                     (order_id, 'TEST_CREATED', 0))
-                    self.assertEqual((data['is_test'], data['source']), (True, 'synthetic'))
-                    self.assertEqual([event['to_status'] for event in data['events']], ['TEST_CREATED'])
-                    self.assertEqual(data['items'], [
-                        {'id': 'SYNTHETIC-CHEONGJU', 'name': '가상 청주', 'quantity': 2},
-                        {'id': 'SYNTHETIC-TAKJU', 'name': '가상 탁주', 'quantity': 1}])
-                    self.assertEqual(data['notice']['state'], 'ready')
-                    self.assertEqual(data['notice']['attempts'], 0)
-                    self.assertEqual(set(self.get(path).json), {'order_id', 'status', 'version', 'events'})
-                    with cafe24.database() as conn:
-                        after = {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
-                                 for table in tables}
-                    self.assertEqual(after, before)
-                    with cafe24.database() as conn:
-                        conn.execute('DROP TABLE ourisul_test_order_item')
-                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 503)
-                    with cafe24.database() as conn:
-                        test_orders.schema(conn)
-                        conn.execute('DROP TABLE ourisul_order_notice')
-                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 503)
-                    with cafe24.database() as conn:
-                        notices.schema(conn)
-                        conn.execute('DROP TABLE ourisul_test_order_state')
-                    self.assertEqual(self.get(path + '?view=snapshot').status_code, 503)
-
-                def test_synthetic_order_snapshot_uses_one_database_snapshot(self):
-                    order_id = 'TEST-' + secrets.token_hex(16)
-                    self.assertTrue(test_orders.record_test_order(order_id, scenario={
-                        'SYNTHETIC-CHEONGJU': 1}))
-                    reads = []
-
-                    @contextmanager
-                    def interleaved_read():
-                        with cafe24.database() as conn:
-                            class ReadConnection:
-                                def execute(self, query, params=None):
-                                    cursor = conn.execute(query, params)
-                                    reads.append(query)
-                                    if len(reads) == 2:
-                                        # First SELECT has taken the reader snapshot.
-                                        fulfillment.transition(order_id, 'TEST_PREPARED', 0,
-                                                               'during-snapshot')
-                                        with cafe24.database() as writer:
-                                            writer.execute('''UPDATE ourisul_order_notice
-                                                SET delivered_at=now() WHERE source='synthetic'
-                                                AND order_id=%s''', (order_id,))
-                                            writer.execute('''UPDATE ourisul_test_order_item SET quantity=2
-                                                WHERE order_id=%s AND item_id='SYNTHETIC-CHEONGJU' ''',
-                                                (order_id,))
-                                    return cursor
+                    with cafe24.d…8801 tokens truncated…                                    return cursor
 
                             yield ReadConnection()
 
