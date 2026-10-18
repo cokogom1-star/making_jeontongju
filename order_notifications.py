@@ -55,6 +55,12 @@ def channel_schema(conn):
         ON ourisul_channel_order_event (source, order_id, id)''')
 
 
+def _channel_schema_ready(conn):
+    return all(conn.execute('SELECT to_regclass(%s)', (name,)).fetchone()[0] is not None
+               for name in ('ourisul_order_notice', 'ourisul_channel_order_state',
+                            'ourisul_channel_order_event', 'ourisul_channel_order_event_order_idx'))
+
+
 def _summary(source, item):
     if source not in SOURCES or not isinstance(item, dict):
         raise ValueError('Invalid order summary')
@@ -85,7 +91,15 @@ def record_orders(source, summaries, connect):
         last[row[0]] = row
     inserted = 0
     with connect() as conn:
-        channel_schema(conn)
+        # Initialize only when needed. DDL and order writes must not share a
+        # transaction: a concurrent poll waiting on a notice row can deadlock
+        # with CREATE INDEX's table lock. The advisory lock serializes first
+        # initialization, with a second check for the waiting worker.
+        if not _channel_schema_ready(conn):
+            conn.execute('SELECT pg_advisory_xact_lock(20261018, 1)')
+            if not _channel_schema_ready(conn):
+                channel_schema(conn)
+    with connect() as conn:
         # A stable lock order avoids deadlock between overlapping poll batches.
         for order_id in sorted(first):
             _, first_status_in_batch, ordered_at, item_count = first[order_id]
