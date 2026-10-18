@@ -392,6 +392,18 @@ def main():
                     with ThreadPoolExecutor(max_workers=2) as pool:
                         results = list(pool.map(record_pair, (False, True)))
                     self.assertEqual(sorted(results), [0, 2])
+                    # Concurrent first initialization cannot put DDL locks in
+                    # the same transaction as notice/event writes.
+                    with cafe24.database() as conn:
+                        conn.execute('DROP TABLE ourisul_channel_order_event, ourisul_channel_order_state')
+                    barrier = Barrier(2)
+                    def first_poll():
+                        barrier.wait()
+                        return notices.record_orders('coupang', [row('PAID', 'INIT')], cafe24.database)
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        self.assertEqual(sorted(pool.map(lambda _: first_poll(), range(2))), [0, 1])
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute("SELECT count(*) FROM ourisul_channel_order_event WHERE order_id = 'INIT'").fetchone()[0], 1)
 
                 def test_payment_auth_csrf_and_disabled_gate(self):
                     self.assertEqual(self.client.get('/admin/payments/test').status_code, 401)
