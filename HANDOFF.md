@@ -1,6 +1,30 @@
 # Handoff
 
-## Private saved channel order inbox (proposed)
+## Saved channel observations
+
+The authorized Cafe24/Coupang polling write path now keeps the original
+`ourisul_order_notice` summary and delivery fields unchanged while saving a
+separate current collected status in `ourisul_channel_order_state` and an
+append-only status-change sequence in `ourisul_channel_order_event`. A repeated
+same-status poll adds no event; a status change adds one. The event's
+`observed_at` is the database collection time, not a provider event time or a
+claim about fulfillment order. A stale or reordered poll can move the saved
+current status backward. These tables are not populated by inbox reads or
+synthetic writes. Existing notice rows acquire a first event using their
+original `created_at` when next polled, then a change event if the newly
+collected status differs. There is no bulk backfill.
+
+Within a batch, the first occurrence of an ID supplies the immutable notice;
+the last occurrence supplies the latest collected status. Row locks use sorted
+IDs across concurrent batches. The first notice and subsequent status/event
+writes commit atomically. The isolated PostgreSQL verifier covers replays,
+changed status, preserved delivered/retry/lease fields, pre-existing notices,
+duplicate IDs, invalid batches, rollback, and overlapping concurrent polls.
+No provider or Slack request is made by this recording function. A local
+disposable PostgreSQL URL was unavailable, so exact-head CI must complete
+before review can authorize promotion.
+
+## Private saved channel order inbox
 
 `GET /admin/orders/channels` reads only persisted Cafe24/Coupang notice summaries
 through the existing administrator Basic authentication. It shows at most 25
@@ -32,11 +56,10 @@ page reflects the original snapshot and a subsequent request reflects the
 new one. It also checks the gate and missing-table behavior.
 
 This remains a rehearsal, not customer checkout or shipment tracking. The
-next product milestone is an authenticated, read-only channel order inbox
-using already persisted Cafe24/Coupang order metadata, explicitly labeled as
-the last observed status rather than live fulfillment. Customer checkout
-still requires settled identity, age verification, inventory, payment,
-fulfillment, and channel reconciliation requirements.
+private channel inbox is available as described above; it still displays
+the first saved summary, not the new current collected status or history.
+Customer checkout still requires settled identity, age verification,
+inventory, payment, fulfillment, and channel reconciliation requirements.
 
 ## Admin synthetic lookup recovery
 
