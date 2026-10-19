@@ -1891,6 +1891,8 @@ def main():
                 def test_channel_inbox_is_private_bounded_historical_and_read_only(self):
                     path = '/admin/orders/channels'
                     self.assertEqual(self.client.get(path).status_code, 401)
+                    self.assertIn('저장된 채널 주문 기록이 없습니다.',
+                                  self.get(path).get_data(as_text=True))
                     stamp = datetime(2026, 10, 1, tzinfo=timezone.utc)
                     with cafe24.database() as conn:
                         for i in range(27):
@@ -1907,22 +1909,48 @@ def main():
                         'order_id': 'INBOX-01', 'status': 'CHANGED',
                         'ordered_at': '2026-10-02T00:00:00Z', 'item_count': 9,
                     }], cafe24.database), 0)
+                    for status in ('PACKED', 'REVIEW', 'CHANGED_AGAIN'):
+                        self.assertEqual(notices.record_orders('cafe24', [{
+                            'order_id': 'INBOX-01', 'status': status,
+                            'ordered_at': '2026-10-02T00:00:00Z', 'item_count': 9,
+                        }], cafe24.database), 0)
                     with cafe24.database() as conn:
+                        conn.execute('''INSERT INTO ourisul_channel_order_state
+                            (source, order_id, status, observed_at) VALUES
+                            ('coupang', 'INBOX-26', %s, %s)''',
+                            ('<img src=x onerror=alert(2)>', stamp))
+                        conn.execute('''INSERT INTO ourisul_channel_order_event
+                            (source, order_id, status, observed_at) VALUES
+                            ('coupang', 'INBOX-26', %s, %s)''',
+                            ('<img src=x onerror=alert(2)>', stamp))
                         before = conn.execute('''SELECT source, order_id, status, ordered_at, item_count,
                             created_at, delivered_at, attempts, next_attempt_at, lease_until
                             FROM ourisul_order_notice ORDER BY source, order_id''').fetchall()
+                        observations_before = [conn.execute('SELECT * FROM ' + table +
+                            ' ORDER BY source, order_id' + (', id' if table.endswith('event') else '')).fetchall()
+                            for table in ('ourisul_channel_order_state', 'ourisul_channel_order_event')]
                     first = self.get(path)
                     self.assertEqual(first.status_code, 200)
                     self.assertEqual(first.headers['Cache-Control'], 'no-store')
                     self.assertEqual(first.headers['Referrer-Policy'], 'no-referrer')
                     html = first.get_data(as_text=True)
                     self.assertIn('최초 수집 당시', html)
-                    self.assertIn('이후 변경은 반영되지 않을 수 있습니다', html)
-                    self.assertNotIn('CHANGED', html)
+                    self.assertIn('지금 채널의 최신 상태를 보장하지 않습니다', html)
+                    self.assertIn('결제·출고·배송의 실제 진행이나 완료를 증명하지 않습니다', html)
+                    self.assertIn('CHANGED_AGAIN', html)
+                    self.assertIn('REVIEW', html)
+                    self.assertIn('PACKED', html)
+                    self.assertNotIn('<li>CHANGED ', html)
+                    self.assertEqual(html.count('<li>'), 4)
+                    self.assertLess(html.index('CHANGED_AGAIN'), html.index('REVIEW'))
+                    self.assertLess(html.index('REVIEW'), html.index('PACKED'))
+                    self.assertIn('수집 이력 없음', html)
                     self.assertEqual(html.count('<tr><td>'), 25)
                     self.assertNotIn('TEST-inbox', html)
                     self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', html)
                     self.assertNotIn('<script>alert(1)</script>', html)
+                    self.assertIn('&lt;img src=x onerror=alert(2)&gt;', html)
+                    self.assertNotIn('<img src=x onerror=alert(2)>', html)
                     from html import unescape
                     link = re.search(r'<a href="([^"]+)">이전 기록 보기 →</a>', html)
                     self.assertIsNotNone(link)
@@ -1944,12 +1972,70 @@ def main():
                         after = conn.execute('''SELECT source, order_id, status, ordered_at, item_count,
                             created_at, delivered_at, attempts, next_attempt_at, lease_until
                             FROM ourisul_order_notice ORDER BY source, order_id''').fetchall()
+                        observations_after = [conn.execute('SELECT * FROM ' + table +
+                            ' ORDER BY source, order_id' + (', id' if table.endswith('event') else '')).fetchall()
+                            for table in ('ourisul_channel_order_state', 'ourisul_channel_order_event')]
                     self.assertEqual(before, after)
+                    self.assertEqual(observations_before, observations_after)
+                    with cafe24.database() as conn:
+                        conn.execute('DROP TABLE ourisul_channel_order_event, ourisul_channel_order_state')
+                    missing_ledger = self.get(path)
+                    self.assertEqual(missing_ledger.status_code, 200)
+                    self.assertIn('수집 기록 저장소를 확인할 수 없음', missing_ledger.get_data(as_text=True))
+                    self.assertEqual(missing_ledger.headers['Cache-Control'], 'no-store')
+                    with cafe24.database() as conn:
+                        conn.execute('TRUNCATE ourisul_order_notice')
+                    self.assertIn('저장된 채널 주문 기록이 없습니다.',
+                                  self.get(path).get_data(as_text=True))
                     with cafe24.database() as conn:
                         conn.execute('DROP TABLE ourisul_order_notice')
                     self.assertEqual(self.get(path).status_code, 503)
                     with cafe24.database() as conn:
                         self.assertIsNone(conn.execute("SELECT to_regclass('ourisul_order_notice')").fetchone()[0])
+
+                def test_channel_inbox_history_is_bounded_and_snapshot_consistent(self):
+                    import channel_inbox
+                    from contextlib import contextmanager
+                    item = {'order_id': 'SAME-ID', 'status': 'FIRST',
+                            'ordered_at': '2026-10-01T00:00:00Z', 'item_count': 0}
+                    notices.record_orders('cafe24', [item], cafe24.database)
+                    notices.record_orders('coupang', [item], cafe24.database)
+                    with cafe24.database() as conn:
+                        conn.execute('''INSERT INTO ourisul_channel_order_event
+                            (source, order_id, status, observed_at)
+                            SELECT 'cafe24', 'SAME-ID', 'EVENT_' || n, now()
+                            FROM generate_series(1, 30) AS n ORDER BY n''')
+                        conn.execute('''UPDATE ourisul_channel_order_state SET status = 'EVENT_30'
+                            WHERE source = 'cafe24' AND order_id = 'SAME-ID' ''')
+                    rows, cursor = channel_inbox.saved_orders(connect=cafe24.database)
+                    self.assertIsNone(cursor)
+                    self.assertEqual(len(rows), 2)
+                    by_source = {row['source']: row for row in rows}
+                    self.assertEqual(by_source['coupang']['observed_status'], 'FIRST')
+                    self.assertEqual([event['status'] for event in by_source['cafe24']['events']],
+                                     ['EVENT_30', 'EVENT_29', 'EVENT_28'])
+
+                    # Commit a concurrent collection after the first snapshot
+                    # query, but before the page query on that same connection.
+                    @contextmanager
+                    def interleaved():
+                        with cafe24.database() as conn:
+                            class ConnectionProxy:
+                                def execute(self, query, params=None):
+                                    if 'WITH page AS' in query:
+                                        notices.record_orders('cafe24', [{**item, 'status': 'NEW'}],
+                                                              cafe24.database)
+                                    return conn.execute(query, params)
+                            yield ConnectionProxy()
+
+                    old_rows, _ = channel_inbox.saved_orders(connect=interleaved)
+                    old_cafe = next(row for row in old_rows if row['source'] == 'cafe24')
+                    self.assertEqual(old_cafe['observed_status'], 'EVENT_30')
+                    self.assertEqual(old_cafe['events'][0]['status'], 'EVENT_30')
+                    new_rows, _ = channel_inbox.saved_orders(connect=cafe24.database)
+                    new_cafe = next(row for row in new_rows if row['source'] == 'cafe24')
+                    self.assertEqual(new_cafe['observed_status'], 'NEW')
+                    self.assertEqual(new_cafe['events'][0]['status'], 'NEW')
 
                 def test_network_default_deny(self):
                     with self.assertRaisesRegex(AssertionError, 'Unexpected external HTTP'):
