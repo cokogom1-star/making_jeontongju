@@ -353,7 +353,10 @@ def main():
                         saved_at = conn.execute("SELECT created_at FROM ourisul_order_notice WHERE order_id = 'LEGACY'").fetchone()[0]
                         first_at = conn.execute("SELECT observed_at FROM ourisul_channel_order_event WHERE order_id = 'LEGACY' ORDER BY id LIMIT 1").fetchone()[0]
                         self.assertEqual(first_at, saved_at)
-                    self.assertNotIn('SHIPPED', self.get('/admin/orders/channels').get_data(as_text=True))
+                    inbox = self.get('/admin/orders/channels').get_data(as_text=True)
+                    self.assertIn('SHIPPED', inbox)
+                    self.assertIn('PAID', inbox)
+                    self.assertIn('ACCEPT', inbox)
 
                 def test_channel_observation_batch_rollback_and_concurrent_replay(self):
                     row = lambda status, order_id: {'order_id': order_id, 'status': status,
@@ -1906,12 +1909,12 @@ def main():
                             (source, order_id, status, ordered_at, item_count, created_at)
                             VALUES ('synthetic', 'TEST-inbox', 'TEST', '2026-10-01', 0, %s)''', (stamp,))
                     self.assertEqual(notices.record_orders('cafe24', [{
-                        'order_id': 'INBOX-01', 'status': 'CHANGED',
+                        'order_id': 'INBOX-25', 'status': 'CHANGED',
                         'ordered_at': '2026-10-02T00:00:00Z', 'item_count': 9,
                     }], cafe24.database), 0)
                     for status in ('PACKED', 'REVIEW', 'CHANGED_AGAIN'):
                         self.assertEqual(notices.record_orders('cafe24', [{
-                            'order_id': 'INBOX-01', 'status': status,
+                            'order_id': 'INBOX-25', 'status': status,
                             'ordered_at': '2026-10-02T00:00:00Z', 'item_count': 9,
                         }], cafe24.database), 0)
                     with cafe24.database() as conn:
