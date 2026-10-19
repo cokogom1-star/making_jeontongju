@@ -34,6 +34,33 @@ def schema(conn):
     )''')
 
 
+def channel_schema(conn):
+    """Create the channel observation ledger on the authorized poller write path."""
+    schema(conn)
+    conn.execute('''CREATE TABLE IF NOT EXISTS ourisul_channel_order_state (
+        source TEXT NOT NULL CHECK (source IN ('cafe24', 'coupang')),
+        order_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        observed_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (source, order_id)
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS ourisul_channel_order_event (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        source TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        observed_at TIMESTAMPTZ NOT NULL
+    )''')
+    conn.execute('''CREATE INDEX IF NOT EXISTS ourisul_channel_order_event_order_idx
+        ON ourisul_channel_order_event (source, order_id, id)''')
+
+
+def _channel_schema_ready(conn):
+    return all(conn.execute('SELECT to_regclass(%s)', (name,)).fetchone()[0] is not None
+               for name in ('ourisul_order_notice', 'ourisul_channel_order_state',
+                            'ourisul_channel_order_event', 'ourisul_channel_order_event_order_idx'))
+
+
 def _summary(source, item):
     if source not in SOURCES or not isinstance(item, dict):
         raise ValueError('Invalid order summary')
@@ -51,20 +78,61 @@ def _summary(source, item):
 
 
 def record_orders(source, summaries, connect):
-    """Persist new orders before notifying. connect is a zero-argument DB factory."""
+    """Persist first notices and channel observations; never alter a queued notice."""
     if source not in SOURCES or not isinstance(summaries, list):
         raise ValueError('Invalid order batch')
+    # Preserve the first summary for the immutable notice and the final status
+    # as the batch's latest collected observation. Validate before any writes.
     rows = [_summary(source, item) for item in summaries]
+    first = {}
+    last = {}
+    for row in rows:
+        first.setdefault(row[0], row)
+        last[row[0]] = row
     inserted = 0
     with connect() as conn:
-        schema(conn)
-        for order_id, status, ordered_at, item_count in rows:
+        # Initialize only when needed. DDL and order writes must not share a
+        # transaction: a concurrent poll waiting on a notice row can deadlock
+        # with CREATE INDEX's table lock. The advisory lock serializes first
+        # initialization, with a second check for the waiting worker.
+        if not _channel_schema_ready(conn):
+            conn.execute('SELECT pg_advisory_xact_lock(20261018, 1)')
+            if not _channel_schema_ready(conn):
+                channel_schema(conn)
+    with connect() as conn:
+        # A stable lock order avoids deadlock between overlapping poll batches.
+        for order_id in sorted(first):
+            _, first_status_in_batch, ordered_at, item_count = first[order_id]
+            status = last[order_id][1]
             result = conn.execute(
                 'INSERT INTO ourisul_order_notice '
                 '(source, order_id, status, ordered_at, item_count) VALUES (%s,%s,%s,%s,%s) '
                 'ON CONFLICT (source, order_id) DO NOTHING',
-                (source, order_id, status, ordered_at, item_count))
+                (source, order_id, first_status_in_batch, ordered_at, item_count))
             inserted += result.rowcount
+            # The notice row is the per-order serialization lock. It also keeps
+            # the first summary and all delivery fields immutable on repolls.
+            first_status, first_seen = conn.execute('''SELECT status, created_at
+                FROM ourisul_order_notice WHERE source = %s AND order_id = %s FOR UPDATE''',
+                (source, order_id)).fetchone()
+            state = conn.execute('''SELECT status FROM ourisul_channel_order_state
+                WHERE source = %s AND order_id = %s''', (source, order_id)).fetchone()
+            if state is None:
+                conn.execute('''INSERT INTO ourisul_channel_order_state
+                    (source, order_id, status, observed_at) VALUES (%s,%s,%s,%s)''',
+                    (source, order_id, first_status, first_seen))
+                conn.execute('''INSERT INTO ourisul_channel_order_event
+                    (source, order_id, status, observed_at) VALUES (%s,%s,%s,%s)''',
+                    (source, order_id, first_status, first_seen))
+                state = (first_status,)
+            if state[0] != status:
+                observed_at = conn.execute('SELECT clock_timestamp()').fetchone()[0]
+                conn.execute('''UPDATE ourisul_channel_order_state
+                    SET status = %s, observed_at = %s WHERE source = %s AND order_id = %s''',
+                    (status, observed_at, source, order_id))
+                conn.execute('''INSERT INTO ourisul_channel_order_event
+                    (source, order_id, status, observed_at) VALUES (%s,%s,%s,%s)''',
+                    (source, order_id, status, observed_at))
     return inserted
 
 

@@ -106,12 +106,14 @@ def main():
                         cafe24.schema(conn)
                         direct_checkout.schema(conn)
                         notices.schema(conn)
+                        notices.channel_schema(conn)
                         test_orders.schema(conn)
                         fulfillment.schema(conn)
                         conn.execute('TRUNCATE ourisul_cafe24_token, ourisul_test_payments, '
                                      'ourisul_test_order_item, '
                                      'ourisul_test_order_event, ourisul_test_order_state, '
-                                     'ourisul_test_orders, ourisul_order_notice')
+                                     'ourisul_test_orders, ourisul_order_notice, '
+                                     'ourisul_channel_order_state, ourisul_channel_order_event')
                         cafe24.save_token(conn, {'access_token': 'synthetic-access',
                                                'refresh_token': 'synthetic-refresh'})
 
@@ -302,6 +304,106 @@ def main():
                         with self.assertRaises(ValueError):
                             coupang.order_summaries(start, start + timedelta(hours=24), get=fake_get)
                         self.assertEqual(fake_get.call_count, before)
+
+                def test_channel_observations_preserve_first_notice_and_deduplicate(self):
+                    def summary(status, order_id='OBS-1'):
+                        return {'order_id': order_id, 'status': status,
+                                'ordered_at': '2026-10-01T00:00:00Z', 'item_count': 1}
+                    self.assertEqual(notices.record_orders('cafe24', [summary('PAID')], cafe24.database), 1)
+                    with cafe24.database() as conn:
+                        conn.execute('''UPDATE ourisul_order_notice SET attempts = 3,
+                            delivered_at = now(), next_attempt_at = now() + interval '1 hour',
+                            lease_until = now() + interval '2 hours'
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''')
+                        before = conn.execute('''SELECT * FROM ourisul_order_notice
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''').fetchone()
+                    self.assertEqual(notices.record_orders('cafe24', [summary('PAID')], cafe24.database), 0)
+                    self.assertEqual(notices.record_orders('cafe24', [summary('SHIPPED')], cafe24.database), 0)
+                    self.assertEqual(notices.record_orders('cafe24', [summary('SHIPPED')], cafe24.database), 0)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT * FROM ourisul_order_notice
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''').fetchone(), before)
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_state
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ''').fetchone(), ('SHIPPED',))
+                        events = conn.execute('''SELECT status, observed_at FROM ourisul_channel_order_event
+                            WHERE source = 'cafe24' AND order_id = 'OBS-1' ORDER BY id''').fetchall()
+                        self.assertEqual([event[0] for event in events], ['PAID', 'SHIPPED'])
+                        self.assertEqual(events[0][1], before[5])
+                    # A duplicate ID retains its first notice and last observed status.
+                    self.assertEqual(notices.record_orders('cafe24',
+                        [summary('PAID', 'OBS-2'), summary('SHIPPED', 'OBS-2')], cafe24.database), 1)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_state
+                            WHERE source = 'cafe24' AND order_id = 'OBS-2' ''').fetchone(), ('SHIPPED',))
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_order_notice
+                            WHERE source = 'cafe24' AND order_id = 'OBS-2' ''').fetchone(), ('PAID',))
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_event
+                            WHERE source = 'cafe24' AND order_id = 'OBS-2' ORDER BY id''').fetchall(),
+                            [('PAID',), ('SHIPPED',)])
+                    # An older notice gets its original database save time as its first event.
+                    with cafe24.database() as conn:
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count)
+                            VALUES ('coupang', 'LEGACY', 'ACCEPT', '2026-10-01', 1)''')
+                    self.assertEqual(notices.record_orders('coupang', [summary('SHIPPED', 'LEGACY')], cafe24.database), 0)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_event
+                            WHERE source = 'coupang' AND order_id = 'LEGACY' ORDER BY id''').fetchall(),
+                            [('ACCEPT',), ('SHIPPED',)])
+                        saved_at = conn.execute("SELECT created_at FROM ourisul_order_notice WHERE order_id = 'LEGACY'").fetchone()[0]
+                        first_at = conn.execute("SELECT observed_at FROM ourisul_channel_order_event WHERE order_id = 'LEGACY' ORDER BY id LIMIT 1").fetchone()[0]
+                        self.assertEqual(first_at, saved_at)
+                    self.assertNotIn('SHIPPED', self.get('/admin/orders/channels').get_data(as_text=True))
+
+                def test_channel_observation_batch_rollback_and_concurrent_replay(self):
+                    row = lambda status, order_id: {'order_id': order_id, 'status': status,
+                        'ordered_at': '2026-10-01T00:00:00Z', 'item_count': 1}
+                    with self.assertRaises(ValueError):
+                        notices.record_orders('cafe24', [row('PAID', 'VALID'),
+                            row('INVALID STATUS', 'BAD')], cafe24.database)
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute("SELECT count(*) FROM ourisul_order_notice WHERE order_id = 'VALID'").fetchone()[0], 0)
+                        conn.execute("ALTER TABLE ourisul_channel_order_event ADD CONSTRAINT reject_blocked CHECK (status <> 'BLOCKED')")
+                    with self.assertRaises(psycopg.errors.CheckViolation):
+                        notices.record_orders('cafe24', [row('PAID', 'A-ROLLBACK'),
+                            row('BLOCKED', 'Z-FAIL')], cafe24.database)
+                    with cafe24.database() as conn:
+                        for table in ('ourisul_order_notice', 'ourisul_channel_order_state',
+                                      'ourisul_channel_order_event'):
+                            self.assertEqual(conn.execute(f"SELECT count(*) FROM {table} WHERE order_id IN ('A-ROLLBACK', 'Z-FAIL')").fetchone()[0], 0)
+                        conn.execute('ALTER TABLE ourisul_channel_order_event DROP CONSTRAINT reject_blocked')
+                    barrier = Barrier(2)
+                    def record():
+                        barrier.wait()
+                        return notices.record_orders('cafe24', [row('PAID', 'RACE')], cafe24.database)
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        results = list(pool.map(lambda _: record(), range(2)))
+                    self.assertEqual(sorted(results), [0, 1])
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute("SELECT count(*) FROM ourisul_channel_order_event WHERE order_id = 'RACE'").fetchone()[0], 1)
+                    # Opposite batch order still takes row locks in the same order.
+                    barrier = Barrier(2)
+                    def record_pair(reverse):
+                        barrier.wait()
+                        ids = ('RACE-A', 'RACE-B')
+                        if reverse:
+                            ids = tuple(reversed(ids))
+                        return notices.record_orders('coupang', [row('PAID', key) for key in ids], cafe24.database)
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        results = list(pool.map(record_pair, (False, True)))
+                    self.assertEqual(sorted(results), [0, 2])
+                    # Concurrent first initialization cannot put DDL locks in
+                    # the same transaction as notice/event writes.
+                    with cafe24.database() as conn:
+                        conn.execute('DROP TABLE ourisul_channel_order_event, ourisul_channel_order_state')
+                    barrier = Barrier(2)
+                    def first_poll():
+                        barrier.wait()
+                        return notices.record_orders('coupang', [row('PAID', 'INIT')], cafe24.database)
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        self.assertEqual(sorted(pool.map(lambda _: first_poll(), range(2))), [0, 1])
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute("SELECT count(*) FROM ourisul_channel_order_event WHERE order_id = 'INIT'").fetchone()[0], 1)
 
                 def test_payment_auth_csrf_and_disabled_gate(self):
                     self.assertEqual(self.client.get('/admin/payments/test').status_code, 401)
