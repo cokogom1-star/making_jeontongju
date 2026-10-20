@@ -1,5 +1,29 @@
 # Handoff
 
+## Private channel collection history
+
+The administrator-only `/admin/orders/channels` inbox now displays each
+notice's immutable first status alongside the last collected status and its
+database observation time. It shows at most the three most recent status
+change events per order, ordered by durable event ID. A page still contains at
+most 25 Cafe24/Coupang notices; synthetic notices are excluded. The notice,
+state, and bounded history are read in one repeatable-read, read-only snapshot.
+Legacy notices without a state/event row say that no collection history is
+saved. If either observation table does not exist, the notice inbox remains
+available but explicitly says its collection ledger cannot be checked. A
+missing notice table still returns 503. Reads never create tables, repair
+rows, call providers, or expose customer or outbox data. Basic authentication
+and no-store/no-referrer headers remain in place.
+
+The last collected status can be stale or move backward when a poll collects
+an older provider value. The database timestamps and event order describe
+when this application saved observations, not provider fulfillment chronology.
+The page explicitly says it cannot prove current payment, dispatch, delivery,
+or completion. The isolated verifier covers private access, pagination,
+history bounds/order, legacy and missing-ledger states, escaping, and no
+mutation. No local disposable PostgreSQL URL was available; CI on the exact
+PR revision must complete before promotion.
+
 ## Saved channel observations
 
 The authorized Cafe24/Coupang polling write path now keeps the original
@@ -26,17 +50,10 @@ before review can authorize promotion.
 
 ## Private saved channel order inbox
 
-`GET /admin/orders/channels` reads only persisted Cafe24/Coupang notice summaries
-through the existing administrator Basic authentication. It shows at most 25
-records per page using a strict `(created_at, source, order_id)` cursor and
-excludes synthetic notices. The page shows channel, order ID, original saved
-status, channel-provided order time, and database save time; it does not show
-customer data or outbox delivery details. `record_orders` ignores repeats, so
-the saved status is from the **first collection**, not the latest channel state.
-The page states this and does not imply live payment or fulfillment status.
-Reads use a read-only PostgreSQL transaction and do not initialize tables,
-call providers, or repair data. An absent notice table yields 503. Verification
-must use a disposable `VERIFY_DATABASE_URL`; no production database is used.
+`GET /admin/orders/channels` retains its strict
+`(created_at, source, order_id)` cursor and excludes synthetic notices. Its
+first saved status stays immutable while the newer collection history appears
+in separate columns, as described above.
 
 
 ## Consistent synthetic delivery timeline
@@ -56,8 +73,8 @@ page reflects the original snapshot and a subsequent request reflects the
 new one. It also checks the gate and missing-table behavior.
 
 This remains a rehearsal, not customer checkout or shipment tracking. The
-private channel inbox is available as described above; it still displays
-the first saved summary, not the new current collected status or history.
+private channel inbox is available as described above with the first saved
+summary and separately collected status/history.
 Customer checkout still requires settled identity, age verification,
 inventory, payment, fulfillment, and channel reconciliation requirements.
 
