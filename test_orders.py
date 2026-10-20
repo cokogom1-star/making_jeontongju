@@ -57,6 +57,7 @@ pattern="TEST-[0-9a-f]{32}" placeholder="TEST-…">
 <button type="submit">새 합성 주문 기록</button></form>
 <section aria-labelledby="scenario-heading"><h2 id="scenario-heading">가상 품목 수량 기록</h2>
 <p>관리자 전용 가상 장바구니입니다. 실제 판매 상품·재고·가격·결제·배송과 연결되지 않습니다.</p>
+<p><a href="{{url_for('test_orders.start_rehearsal')}}">선택·확인·기록 단계로 연습하기</a></p>
 <form method="post" action="{{url_for('test_orders.create_test_order', view='html')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
 <input type="hidden" name="order_id" value="{{scenario_order_id}}">
@@ -127,6 +128,48 @@ TRACKING_NOT_FOUND = ('''<!doctype html><html lang="ko"><head><meta charset="utf
 <p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 다시 조회하기</a></p>
 </main></body></html>''')
 
+REHEARSAL_FORM = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>가상 주문 연습 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>가상 주문 연습</h1>
+<p>관리자 전용 시연입니다. 아래 품목은 허구이며 실제 상품·재고·가격·결제·배송과 연결되지 않습니다.</p>
+<form method="post" action="{{url_for('test_orders.review_rehearsal')}}">
+<input type="hidden" name="csrf" value="{{csrf}}">
+<input type="hidden" name="order_id" value="{{order_id}}">
+<input type="hidden" name="scenario" value="fixed-v1">
+<label>가상 청주 <input type="number" name="SYNTHETIC-CHEONGJU" min="0" max="10" step="1" value="1" required></label>
+<label>가상 탁주 <input type="number" name="SYNTHETIC-TAKJU" min="0" max="10" step="1" value="0" required></label>
+<button type="submit">선택한 수량 확인</button></form>
+<p><a href="{{url_for('test_orders.create_test_order', view='html')}}">관리자 합성 주문 조회</a></p>
+</main></body></html>''')
+
+REHEARSAL_REVIEW = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>가상 수량 확인 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>가상 수량 확인</h1>
+<p>아직 저장되지 않았습니다. 허구의 품목이며 주문·결제·배송이 발생하지 않습니다.</p>
+<ul>{% for item in items %}<li>{{item.name}} · {{item.quantity}}개</li>{% endfor %}</ul>
+<form method="post" action="{{url_for('test_orders.confirm_rehearsal')}}">
+<input type="hidden" name="csrf" value="{{csrf}}">
+<input type="hidden" name="order_id" value="{{order_id}}">
+<button type="submit">이 가상 수량 기록</button></form>
+<p><a href="{{url_for('test_orders.start_rehearsal')}}">수량 다시 선택</a></p>
+</main></body></html>''')
+
+REHEARSAL_RECEIPT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>가상 기록 확인 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>가상 기록 확인</h1>
+<p>관리자 전용 시연 기록입니다. 실제 주문·결제·발송이 아닙니다.</p>
+<p>합성 기록 ID: <strong>{{snapshot.order_id}}</strong></p>
+<ul>{% for item in snapshot['items'] %}<li>{{item.name}} · {{item.quantity}}개</li>{% endfor %}</ul>
+<p>시연 상태: <strong>{{snapshot.status}}</strong></p>
+<p>테스트 알림 기록: <strong>{{snapshot.notice.state}}</strong> ({{notice_label}})</p>
+<small>알림 상태는 대기열 기록이며 실제 Slack 수신이나 배송을 뜻하지 않습니다.</small>
+<p><a href="{{url_for('test_orders.test_order_history', order_id=snapshot.order_id, view='html')}}">합성 배송 상태 보기</a></p>
+<p><a href="{{url_for('test_orders.start_rehearsal')}}">새 가상 주문 연습</a></p>
+</main></body></html>''')
+
 NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 발송 처리',
                'TEST_DELIVERED': '합성 배송 완료'}
 NOTICE_LABELS = {'ready': '발송 대기', 'deferred': '재시도 대기',
@@ -134,6 +177,7 @@ NOTICE_LABELS = {'ready': '발송 대기', 'deferred': '재시도 대기',
                  'missing': '알림 기록 없음'}
 SCENARIO_ITEMS = {'SYNTHETIC-CHEONGJU': '가상 청주', 'SYNTHETIC-TAKJU': '가상 탁주'}
 RECENT_FORM_LIMIT = 8
+REHEARSAL_LIMIT = 8
 
 
 def parse_scenario(form):
@@ -172,6 +216,17 @@ def remember_form_id(mode, order_id):
     """Keep a small set of rendered form IDs for safe cross-tab submissions."""
     key = 'test_scenario_order_ids' if mode == 'scenario' else 'test_order_ids'
     session[key] = (session.get(key, []) + [order_id])[-RECENT_FORM_LIMIT:]
+
+
+def rehearsal_drafts():
+    """Only server-issued IDs and reviewed baskets from this signed session."""
+    return session.get('test_rehearsal_drafts', {})
+
+
+def check_rehearsal_csrf():
+    token = session.get('test_order_csrf', '')
+    if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
+        abort(403)
 
 
 def submitted_form_id(scenario):
@@ -287,6 +342,95 @@ def private_headers(response):
 def hide_disabled_test_orders():
     if os.environ.get('SYNTHETIC_ORDER_TEST_ENABLED') != 'true':
         abort(404)
+
+
+@bp.route('/admin/orders/test/rehearsal')
+@protected
+def start_rehearsal():
+    """Issue a session-bound fictional basket without writing to the database."""
+    if not session.get('test_order_csrf'):
+        session['test_order_csrf'] = secrets.token_urlsafe(32)
+    order_id = 'TEST-' + secrets.token_hex(16)
+    drafts = rehearsal_drafts()
+    ids = session.get('test_rehearsal_ids', [])
+    ids = (ids + [order_id])[-REHEARSAL_LIMIT:]
+    drafts[order_id] = None
+    session['test_rehearsal_ids'] = ids
+    session['test_rehearsal_drafts'] = {issued: drafts[issued] for issued in ids}
+    return render_template_string(REHEARSAL_FORM, csrf=session['test_order_csrf'],
+                                  order_id=order_id)
+
+
+@bp.route('/admin/orders/test/rehearsal/review', methods=['POST'])
+@protected
+def review_rehearsal():
+    """Validate the fixture basket and show a read-only confirmation step."""
+    check_rehearsal_csrf()
+    order_id = request.form.get('order_id', '')
+    drafts = rehearsal_drafts()
+    if not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id) or order_id not in drafts:
+        abort(403)
+    try:
+        scenario = parse_scenario(request.form)
+    except ValueError:
+        abort(400)
+    if scenario is None:
+        abort(400)
+    if drafts[order_id] is not None and drafts[order_id] != scenario:
+        abort(409)
+    drafts[order_id] = scenario
+    session['test_rehearsal_drafts'] = drafts
+    items = [{'name': SCENARIO_ITEMS[item_id], 'quantity': quantity}
+             for item_id, quantity in scenario.items()]
+    return render_template_string(REHEARSAL_REVIEW, csrf=session['test_order_csrf'],
+                                  order_id=order_id, items=items)
+
+
+@bp.route('/admin/orders/test/rehearsal/confirm', methods=['POST'])
+@protected
+def confirm_rehearsal():
+    """Persist exactly the reviewed basket through the existing atomic path."""
+    check_rehearsal_csrf()
+    if set(request.form.keys()) != {'csrf', 'order_id'} or any(
+            len(request.form.getlist(key)) != 1 for key in request.form.keys()):
+        abort(400)
+    order_id = request.form['order_id']
+    drafts = rehearsal_drafts()
+    if not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id) or order_id not in drafts:
+        abort(403)
+    scenario = drafts[order_id]
+    if scenario is None:
+        abort(403)
+    try:
+        record_test_order(order_id, scenario=scenario)
+    except ValueError as exc:
+        if str(exc) == 'Synthetic scenario conflicts with existing order':
+            abort(409)
+        abort(400)
+    return redirect(url_for('test_orders.rehearsal_receipt', order_id=order_id), code=303)
+
+
+@bp.route('/admin/orders/test/rehearsal/<order_id>/receipt')
+@protected
+def rehearsal_receipt(order_id):
+    """Show only a session-owned fictional order; no status changes offered."""
+    drafts = rehearsal_drafts()
+    if not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id) or drafts.get(order_id) is None:
+        abort(404)
+    try:
+        snapshot = order_snapshot(order_id)
+    except ValueError as exc:
+        if str(exc) in ('Synthetic order tables are not initialized',
+                        'Synthetic item table not initialized'):
+            abort(503)
+        abort(404)
+    if snapshot is None:
+        abort(404)
+    if {item['id']: item['quantity'] for item in snapshot['items']} != drafts[order_id]:
+        abort(409)
+    return render_template_string(REHEARSAL_RECEIPT, snapshot=snapshot,
+                                  notice_label=NOTICE_LABELS.get(snapshot['notice'].get('state'),
+                                                                 '알 수 없는 상태'))
 
 
 @bp.route('/admin/orders/test', methods=['GET', 'POST'])

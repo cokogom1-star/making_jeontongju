@@ -1,5 +1,31 @@
 # Handoff
 
+## Admin-only synthetic order rehearsal
+
+`/admin/orders/test/rehearsal` offers a fictional two-item selection, a
+read-only review step, an explicit record action, and a session-owned receipt.
+Every route retains Basic admin authentication, the default-off
+`SYNTHETIC_ORDER_TEST_ENABLED` gate, and private response headers. The server
+issues bounded, session-bound draft IDs; review validates the exact fixed
+fixture fields and saves only to the signed session. Confirmation accepts only
+the CSRF token and draft ID, then uses the existing atomic synthetic order,
+item, state, and outbox write. Exact replay is idempotent. Receipt checks the
+saved item quantities against the session draft and reads the consistent
+snapshot without offering a status mutation; it links to the existing
+administrator timeline for simulated delivery steps. Repeating the same
+review submission displays the review again; changing a reviewed basket
+returns 409, with a fresh selection page available at the starting URL.
+Only the eight newest issued drafts are kept in the session, so older receipt
+links lose session access. It does not access real products,
+prices, stock, customer details, payments, carriers, or providers. Its outbox
+label explicitly describes a record, not a Slack delivery guarantee.
+
+The isolated PostgreSQL verifier covers the no-write review step, malformed
+and duplicate fields, wrong session/CSRF, explicit confirmation, exact replay,
+private receipt, bounded drafts, and disabled gate. A local disposable PostgreSQL URL and
+installed Flask environment were unavailable, so CI on the exact PR revision
+is required before promotion.
+
 ## Private channel collection history
 
 The administrator-only `/admin/orders/channels` inbox now displays each
