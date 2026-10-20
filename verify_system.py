@@ -633,6 +633,94 @@ def main():
                                  for table in tables}
                     self.assertEqual(after, before)
 
+                def test_admin_rehearsal_review_confirm_and_session_receipt(self):
+                    base = '/admin/orders/test/rehearsal'
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_order_notice', 'ourisul_test_order_state',
+                              'ourisul_test_order_event')
+
+                    def saved():
+                        with cafe24.database() as conn:
+                            return {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                    for table in tables}
+
+                    self.assertEqual(self.client.get(base).status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(base).status_code, 404)
+                    before = saved()
+                    page = self.get(base)
+                    self.assertEqual(page.status_code, 200)
+                    self.assertIn('가상 주문 연습', page.get_data(as_text=True))
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                        order_id = sess['test_rehearsal_ids'][-1]
+                    self.assertEqual(saved(), before)
+                    basket = {'csrf': csrf, 'order_id': order_id, 'scenario': 'fixed-v1',
+                              'SYNTHETIC-CHEONGJU': '2', 'SYNTHETIC-TAKJU': '1'}
+                    confirm = {'csrf': csrf, 'order_id': order_id}
+                    self.assertEqual(self.post(base + '/confirm', data=confirm).status_code, 403)
+                    self.assertEqual(self.client.post(base + '/review', data=basket,
+                                                     base_url='https://localhost').status_code, 401)
+                    self.assertEqual(self.client.post(base + '/confirm', data=confirm,
+                                                     base_url='https://localhost').status_code, 401)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.post(base + '/review', data=basket).status_code, 404)
+                        self.assertEqual(self.post(base + '/confirm', data=confirm).status_code, 404)
+                    for invalid, status in (
+                            ({**basket, 'csrf': 'wrong'}, 403),
+                            ({**basket, 'order_id': 'TEST-' + 'f' * 32}, 403),
+                            ({**basket, 'SYNTHETIC-CHEONGJU': '11'}, 400),
+                            ({**basket, 'extra': 'x'}, 400),
+                            (MultiDict(list(basket.items()) + [('SYNTHETIC-TAKJU', '1')]), 400)):
+                        self.assertEqual(self.post(base + '/review', data=invalid).status_code, status)
+                    self.assertEqual(saved(), before)
+                    review = self.post(base + '/review', data=basket)
+                    self.assertEqual(review.status_code, 200)
+                    self.assertIn('가상 청주 · 2개', review.get_data(as_text=True))
+                    self.assertEqual(self.post(base + '/review', data=basket).status_code, 200)
+                    self.assertEqual(self.post(base + '/review', data={**basket,
+                                     'SYNTHETIC-CHEONGJU': '3'}).status_code, 409)
+                    self.assertEqual(saved(), before)
+                    receipt = f'{base}/{order_id}/receipt'
+                    self.assertEqual(self.get(receipt).status_code, 404)
+                    self.assertEqual(self.post(base + '/confirm', data={**confirm,
+                                      'SYNTHETIC-CHEONGJU': '9'}).status_code, 400)
+                    self.assertEqual(self.post(base + '/confirm', data={**confirm,
+                                      'csrf': 'wrong'}).status_code, 403)
+                    self.assertEqual(saved(), before)
+                    result = self.post(base + '/confirm', data=confirm)
+                    self.assertEqual((result.status_code, result.location), (303, receipt))
+                    persisted = saved()
+                    self.assertNotEqual(persisted, before)
+                    self.assertEqual(self.post(base + '/confirm', data=confirm).status_code, 303)
+                    self.assertEqual(saved(), persisted)
+                    display = self.get(receipt)
+                    self.assertEqual(display.status_code, 200)
+                    self.assertIn('가상 탁주 · 1개', display.get_data(as_text=True))
+                    self.assertIn('실제 주문·결제·발송이 아닙니다', display.get_data(as_text=True))
+                    self.assertIn(f'/admin/orders/test/{order_id}/history?view=html',
+                                  display.get_data(as_text=True))
+                    self.assertEqual(display.headers['Cache-Control'], 'no-store')
+                    self.assertEqual(saved(), persisted)
+                    self.assertEqual(self.client.get(receipt).status_code, 401)
+                    foreign = app.test_client()
+                    self.assertEqual(foreign.get(receipt, base_url='https://localhost',
+                                                 auth=self.auth).status_code, 404)
+                    with patch.dict(os.environ, {'SYNTHETIC_ORDER_TEST_ENABLED': 'false'}):
+                        self.assertEqual(self.get(receipt).status_code, 404)
+
+                    ids = [order_id]
+                    for _ in range(test_orders.REHEARSAL_LIMIT):
+                        self.assertEqual(self.get(base).status_code, 200)
+                        with self.client.session_transaction() as sess:
+                            ids.append(sess['test_rehearsal_ids'][-1])
+                    with self.client.session_transaction() as sess:
+                        self.assertEqual(sess['test_rehearsal_ids'], ids[1:])
+                        self.assertEqual(set(sess['test_rehearsal_drafts']), set(ids[1:]))
+                    self.assertEqual(self.get(receipt).status_code, 404)
+                    self.assertEqual(self.post(base + '/confirm', data=confirm).status_code, 403)
+                    self.assertEqual(saved(), persisted)
+
                 def test_synthetic_scenario_persists_atomically_and_replays_exact_payload(self):
                     path = '/admin/orders/test?view=html'
                     self.assertEqual(self.client.get(path).status_code, 401)
