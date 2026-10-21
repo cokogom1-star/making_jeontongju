@@ -147,7 +147,7 @@ REHEARSAL_REVIEW = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>가상 수량 확인 | 우리술</title>'''
     + TRACKING_STYLE + '''</head><body><main><h1>가상 수량 확인</h1>
-<p>아직 저장되지 않았습니다. 허구의 품목이며 주문·결제·배송이 발생하지 않습니다.</p>
+<p>이 확인 단계에서는 기록하지 않습니다. 허구의 품목이며 실제 주문·결제·배송이 발생하지 않습니다.</p>
 <ul>{% for item in items %}<li>{{item.name}} · {{item.quantity}}개</li>{% endfor %}</ul>
 <form method="post" action="{{url_for('test_orders.confirm_rehearsal')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
@@ -169,6 +169,34 @@ REHEARSAL_RECEIPT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-
 <p><a href="{{url_for('test_orders.test_order_history', order_id=snapshot.order_id, view='html')}}">합성 배송 상태 보기</a></p>
 <p><a href="{{url_for('test_orders.start_rehearsal')}}">새 가상 주문 연습</a></p>
 </main></body></html>''')
+
+REHEARSAL_RECOVERY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>{{title}} | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>{{title}}</h1>
+<p>관리자 전용 가상 주문 시연입니다. 실제 주문·결제·배송과 연결되지 않습니다.</p>
+<p>{{guidance}}</p>
+<p>기록 버튼을 눌렀다면 저장 여부를 이 화면만으로 판단하지 마세요. 합성 주문 ID로 관리자 조회 화면에서 확인할 수 있습니다.</p>
+<p><a href="{{url_for('test_orders.start_rehearsal')}}">새 가상 주문 연습 시작하기</a></p>
+<p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 ID 조회하기</a></p>
+</main></body></html>''')
+
+REHEARSAL_ERRORS = {
+    400: ('입력을 확인해 주세요', '수량 또는 요청 항목을 확인하고 새 연습 화면에서 다시 선택해 주세요.'),
+    403: ('요청이 만료되었거나 확인할 수 없습니다',
+          '이 브라우저에서 발급한 요청인지 확인할 수 없습니다. 새 연습 화면을 열어 다시 진행해 주세요.'),
+    404: ('가상 기록을 확인할 수 없습니다',
+          '이 브라우저의 연습 기록이 만료되었거나 해당 기록을 찾을 수 없습니다.'),
+    409: ('가상 기록이 달라졌습니다',
+          '앞서 확인한 수량과 다른 요청 또는 저장된 기록이 있습니다. 새 연습을 시작하거나 합성 주문 ID로 저장된 내용을 확인해 주세요.'),
+    503: ('가상 기록을 지금 확인할 수 없습니다',
+          '기록 조회를 현재 사용할 수 없습니다. 관리자에게 문의하고 합성 주문 ID를 보관해 주세요.'),
+}
+
+
+def rehearsal_error(status):
+    title, guidance = REHEARSAL_ERRORS[status]
+    return render_template_string(REHEARSAL_RECOVERY, title=title, guidance=guidance), status
 
 NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 발송 처리',
                'TEST_DELIVERED': '합성 배송 완료'}
@@ -223,10 +251,15 @@ def rehearsal_drafts():
     return session.get('test_rehearsal_drafts', {})
 
 
-def check_rehearsal_csrf():
+def valid_rehearsal_csrf():
     token = session.get('test_order_csrf', '')
-    if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
-        abort(403)
+    submitted = request.form.get('csrf', '')
+    if not isinstance(token, str) or not isinstance(submitted, str) or not token:
+        return False
+    try:
+        return secrets.compare_digest(token.encode('ascii'), submitted.encode('ascii'))
+    except UnicodeEncodeError:
+        return False
 
 
 def submitted_form_id(scenario):
@@ -365,19 +398,20 @@ def start_rehearsal():
 @protected
 def review_rehearsal():
     """Validate the fixture basket and show a read-only confirmation step."""
-    check_rehearsal_csrf()
+    if not valid_rehearsal_csrf():
+        return rehearsal_error(403)
     order_id = request.form.get('order_id', '')
     drafts = rehearsal_drafts()
     if not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id) or order_id not in drafts:
-        abort(403)
+        return rehearsal_error(403)
     try:
         scenario = parse_scenario(request.form)
     except ValueError:
-        abort(400)
+        return rehearsal_error(400)
     if scenario is None:
-        abort(400)
+        return rehearsal_error(400)
     if drafts[order_id] is not None and drafts[order_id] != scenario:
-        abort(409)
+        return rehearsal_error(409)
     drafts[order_id] = scenario
     session['test_rehearsal_drafts'] = drafts
     items = [{'name': SCENARIO_ITEMS[item_id], 'quantity': quantity}
@@ -390,23 +424,24 @@ def review_rehearsal():
 @protected
 def confirm_rehearsal():
     """Persist exactly the reviewed basket through the existing atomic path."""
-    check_rehearsal_csrf()
+    if not valid_rehearsal_csrf():
+        return rehearsal_error(403)
     if set(request.form.keys()) != {'csrf', 'order_id'} or any(
             len(request.form.getlist(key)) != 1 for key in request.form.keys()):
-        abort(400)
+        return rehearsal_error(400)
     order_id = request.form['order_id']
     drafts = rehearsal_drafts()
     if not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id) or order_id not in drafts:
-        abort(403)
+        return rehearsal_error(403)
     scenario = drafts[order_id]
     if scenario is None:
-        abort(403)
+        return rehearsal_error(403)
     try:
         record_test_order(order_id, scenario=scenario)
     except ValueError as exc:
         if str(exc) == 'Synthetic scenario conflicts with existing order':
-            abort(409)
-        abort(400)
+            return rehearsal_error(409)
+        return rehearsal_error(400)
     return redirect(url_for('test_orders.rehearsal_receipt', order_id=order_id), code=303)
 
 
@@ -416,18 +451,18 @@ def rehearsal_receipt(order_id):
     """Show only a session-owned fictional order; no status changes offered."""
     drafts = rehearsal_drafts()
     if not re.fullmatch(r'TEST-[0-9a-f]{32}', order_id) or drafts.get(order_id) is None:
-        abort(404)
+        return rehearsal_error(404)
     try:
         snapshot = order_snapshot(order_id)
     except ValueError as exc:
         if str(exc) in ('Synthetic order tables are not initialized',
                         'Synthetic item table not initialized'):
-            abort(503)
-        abort(404)
+            return rehearsal_error(503)
+        return rehearsal_error(404)
     if snapshot is None:
-        abort(404)
+        return rehearsal_error(404)
     if {item['id']: item['quantity'] for item in snapshot['items']} != drafts[order_id]:
-        abort(409)
+        return rehearsal_error(409)
     return render_template_string(REHEARSAL_RECEIPT, snapshot=snapshot,
                                   notice_label=NOTICE_LABELS.get(snapshot['notice'].get('state'),
                                                                  '알 수 없는 상태'))

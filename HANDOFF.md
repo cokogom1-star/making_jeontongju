@@ -1,5 +1,27 @@
 # Handoff
 
+## Synthetic rehearsal request recovery
+
+The administrator-only `/admin/orders/test/rehearsal` review, confirmation,
+and receipt routes now show Korean recovery pages for invalid fields (400),
+unrecognized or expired session requests (403), unavailable receipts (404),
+and conflicting reviewed or saved baskets (409). Receipt storage failures retain
+503 with guidance to contact an administrator. Each page links to a fresh
+rehearsal and the existing administrator ID lookup. The page does not assert
+whether a failed confirmation was saved: an administrator can check the ID
+before retrying. Errors do not issue a new draft or write database rows.
+Basic authentication, the default-off synthetic gate, CSRF checks, private
+headers, successful responses, and route-specific status codes remain intact.
+
+Reproduced review behavior: resubmitting the exact reviewed basket displays
+the same review with HTTP 200; changing that basket returns 409. A confirmation
+before review, from another session, or after draft eviction returns 403.
+The earlier PR #31 closing comment's claim that a repeated review returns 403
+was inaccurate. The isolated verifier now asserts the exact replay, changed
+review, recovery links and headers, no database writes on error, and conflicting
+saved-basket recovery. Full disposable-PostgreSQL verification must pass on the
+exact PR head before promotion; these tests do not establish browser behavior.
+
 ## Evidence-gated taste-to-product comparison
 
 The seven-question taste result now includes a separate section for actual
