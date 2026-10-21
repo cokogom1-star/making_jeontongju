@@ -1,5 +1,36 @@
 # Handoff
 
+## Evidence-gated taste-to-product comparison
+
+The seven-question taste result now includes a separate section for actual
+Ourisul products. The style ranking is unchanged. `PRODUCT_SENSORY_PROFILES`
+starts empty: the current repository has no independently verified sensory
+facts for real Cafe24 products. With no profiles, results state clearly that
+there is no evidence-backed product to connect; the quiz makes no catalog or
+database request. This is the current production behavior, including a
+sherry-cask whisky result.
+
+To add a product later, a merchandiser must review its real Cafe24 product
+number and current public description, then enter finite quiz traits with an
+exact supporting excerpt for every trait. The runtime re-fetches that exact
+product, requires it to be currently displayed, rejects sample-labeled
+products, and checks each excerpt against its current description. A product
+appears only when at least two evidenced traits overlap one of the displayed
+style archetypes, including aroma or texture; generic acidity and bitterness
+alone cannot create a link. At most eight valid profiles trigger catalog
+lookups per request, so additional entries require a separate bounded design.
+Whitespace-only evidence is rejected. The UI shows the supporting product text and any known
+differences and links to the product detail. Shared broad sensory dimensions
+are not a claim that traditional liquor tastes like sherry-cask whisky, nor a
+compatibility score or purchase recommendation. If the catalog cannot be
+checked, the result says so. Inactive, missing, renamed or unsupported entries
+silently lose the link. No real profile entry was added in this change.
+
+The isolated verifier uses only fictional fixture products to cover a visible
+exact-ID match, evidence and HTML escaping, absent/hidden IDs, stale source
+text, sample labels and catalog failure. Local syntax and diff checks passed;
+the full disposable-PostgreSQL verifier requires exact-head CI.
+
 ## Admin-only synthetic order rehearsal
 
 `/admin/orders/test/rehearsal` offers a fictional two-item selection, a
