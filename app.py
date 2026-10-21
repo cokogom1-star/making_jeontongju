@@ -261,7 +261,7 @@ def rank_taste_styles(answers):
 # No product has supplied that evidence yet. Style archetypes above are not a
 # source for product facts and must never be copied into this registry.
 PRODUCT_SENSORY_PROFILES = {}
-MAX_TASTE_PRODUCT_LOOKUPS = 8
+MAX_TASTE_PRODUCT_LOOKUPS = 1
 
 
 def taste_product_matches(ranked):
@@ -285,13 +285,22 @@ def taste_product_matches(ranked):
                not 1 <= len(value[1]) <= 120 or not value[1].strip()
                for key, value in traits.items()):
             continue
+        candidate = None
+        for style in ranked:
+            shared_keys = [key for key, (value, _) in traits.items()
+                           if value == style['profile'][tuple(options).index(key)]]
+            if len(shared_keys) >= 2 and set(shared_keys) & {'aroma', 'texture'}:
+                candidate = (style, shared_keys)
+                break
+        if candidate is None:
+            continue
         if looked_up == MAX_TASTE_PRODUCT_LOOKUPS:
             break
         looked_up += 1
         products, notice, _ = products_for_page(product_no=number)
         if notice:
             unavailable = True
-            continue
+            break
         product = next((item for item in products if item['number'] == number and
                         isinstance(item['name'], str) and '샘플' not in item['name']), None)
         if product is None:
@@ -302,20 +311,12 @@ def taste_product_matches(ranked):
         if not description or any(' '.join(excerpt.split()) not in description
                                   for _, excerpt in traits.values()):
             continue
-        for style in ranked:
-            shared = [(options[key][value], excerpt) for key, (value, excerpt) in traits.items()
-                      if value == style['profile'][tuple(options).index(key)]]
-            if len(shared) < 2 or not any(
-                    key in traits and traits[key][0] == style['profile'][tuple(options).index(key)]
-                    for key in ('aroma', 'texture')):
-                continue
-            differences = [options[key][value] for key, (value, _) in traits.items()
-                           if value != style['profile'][tuple(options).index(key)]]
-            matches.append({'product': product, 'style': style, 'shared': shared,
-                            'differences': differences})
-            break
-        if len(matches) == 3:
-            break
+        style, shared_keys = candidate
+        shared = [(options[key][traits[key][0]], traits[key][1]) for key in shared_keys]
+        differences = [options[key][value] for key, (value, _) in traits.items()
+                       if key not in shared_keys]
+        matches.append({'product': product, 'style': style, 'shared': shared,
+                        'differences': differences})
     return matches, ('unavailable' if unavailable and not matches else 'ready')
 
 
