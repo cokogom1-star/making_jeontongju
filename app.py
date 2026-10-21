@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
+from html import unescape
 import os
 import re
 from urllib.parse import urlparse
@@ -254,6 +255,71 @@ def rank_taste_styles(answers):
     return sorted(scored, key=lambda row: (-row[0], row[1]['key']))
 
 
+# Merchandiser-reviewed product facts belong here only after the current Cafe24
+# description states each trait explicitly. Each entry is keyed by its real
+# Cafe24 product number: {'traits': {'aroma': ('fruit', 'exact catalog excerpt')}}.
+# No product has supplied that evidence yet. Style archetypes above are not a
+# source for product facts and must never be copied into this registry.
+PRODUCT_SENSORY_PROFILES = {}
+MAX_TASTE_PRODUCT_LOOKUPS = 1
+
+
+def taste_product_matches(ranked):
+    """Connect displayed styles to visible products with current textual evidence."""
+    if not PRODUCT_SENSORY_PROFILES:
+        return [], 'unprofiled'
+    options = {key: {option[0]: option[1] for option in choices}
+               for key, _, choices in TASTE_QUESTIONS}
+    matches = []
+    unavailable = False
+    looked_up = 0
+    for number, profile in PRODUCT_SENSORY_PROFILES.items():
+        if type(number) is not int or number <= 0 or not isinstance(profile, dict):
+            continue
+        traits = profile.get('traits')
+        if not isinstance(traits, dict) or not traits or set(traits) - set(options):
+            continue
+        if any(not isinstance(value, (list, tuple)) or len(value) != 2 or
+               not isinstance(value[0], str) or value[0] not in options[key] or
+               not isinstance(value[1], str) or
+               not 1 <= len(value[1]) <= 120 or not value[1].strip()
+               for key, value in traits.items()):
+            continue
+        candidate = None
+        for style in ranked:
+            shared_keys = [key for key, (value, _) in traits.items()
+                           if value == style['profile'][tuple(options).index(key)]]
+            if len(shared_keys) >= 2 and set(shared_keys) & {'aroma', 'texture'}:
+                candidate = (style, shared_keys)
+                break
+        if candidate is None:
+            continue
+        if looked_up == MAX_TASTE_PRODUCT_LOOKUPS:
+            break
+        looked_up += 1
+        products, notice, _ = products_for_page(product_no=number)
+        if notice:
+            unavailable = True
+            break
+        product = next((item for item in products if item['number'] == number and
+                        isinstance(item['name'], str) and '샘플' not in item['name']), None)
+        if product is None:
+            continue
+        if not isinstance(product['summary'], str):
+            continue
+        description = ' '.join(unescape(re.sub(r'<[^>]*>', ' ', product['summary'])).split())
+        if not description or any(' '.join(excerpt.split()) not in description
+                                  for _, excerpt in traits.values()):
+            continue
+        style, shared_keys = candidate
+        shared = [(options[key][traits[key][0]], traits[key][1]) for key in shared_keys]
+        differences = [options[key][value] for key, (value, _) in traits.items()
+                       if key not in shared_keys]
+        matches.append({'product': product, 'style': style, 'shared': shared,
+                        'differences': differences})
+    return matches, ('unavailable' if unavailable and not matches else 'ready')
+
+
 @app.route('/taste-explorer')
 def taste_explorer():
     def invalid_selection():
@@ -287,10 +353,12 @@ def taste_explorer():
                   for choice in options if choice[0] == value == feature]
         matches.append({'style': style, 'score': score, 'labels': labels,
                         'tied': sum(other_score == score for other_score, _ in all_ranked) > 1})
+    product_matches, product_state = taste_product_matches([item['style'] for item in matches]) if matches else ([], 'unprofiled')
     css, header, footer = shared_chrome()
-    markup = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>취향 탐색 | 우리술</title><style>''' + css + '''</style></head><body><a class="skip-link" href="#main">본문으로 건너뛰기</a><div class="preview">취향 탐색은 정보용입니다. 이 사이트에서는 주문을 받지 않습니다.</div>''' + header + '''<main id="main"><div class="page-hero"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a> / <span aria-current="page">취향 탐색</span></nav><span class="eyebrow">TASTE EXPLORER</span><h1>나의 술 취향 살펴보기</h1><p>일곱 가지 감각을 고르면 위스키·맥주·와인·전통주를 함께 비교해 볼 수 있습니다. 원하는 술 종류를 먼저 고를 필요가 없습니다.</p></div><section class="page-section"><h2>끌리는 맛과 향을 골라 주세요</h2><p class="taste-note">각 답과 스타일의 대표 감각이 겹치는 정도를 비교합니다. 향을 조금 더 살피고 다른 감각도 함께 비교합니다. 동점 후보는 일정한 순서로 나열하며 표시 순서는 우열을 뜻하지 않습니다. 결과는 성격 판정이나 측정된 상품 적합도가 아닌 취향 탐색 안내입니다.</p><form class="taste-form" method="get" action="/taste-explorer#taste-result">{% for key, prompt, options in questions %}<fieldset><legend>{{loop.index}}. {{prompt}}</legend>{% for value, label, note in options %}<label><input type="radio" name="{{key}}" value="{{value}}" required {% if request.args.get(key) == value %}checked{% endif %}><span><strong>{{label}}</strong> · {{note}}</span></label>{% endfor %}</fieldset>{% endfor %}<button type="submit">스타일 살펴보기</button></form>{% if matches %}<div class="taste-result" id="taste-result" role="region" aria-labelledby="taste-result-title" tabindex="-1"><h2 id="taste-result-title">{% if top_tie_count > 1 %}함께 살펴볼 스타일{% else %}먼저 살펴볼 스타일: {{matches[0].style.name}}{% endif %}</h2><p class="taste-note">네 종류의 술을 한 목록에서 비교한 편집형 탐색 결과입니다. {% if top_tie_count > 1 %}가장 앞선 {{top_tie_count}}가지 스타일은 동점이며 표시 순서에 우열이 없습니다.{% else %}가장 많이 겹친 감각의 스타일을 먼저 보여 줍니다.{% endif %}</p><div class="taste-results">{% for match in matches %}<article class="taste-style"><span class="eyebrow">{{loop.index}} · {{match.style.category}}{% if match.tied %} · 동점{% endif %}</span><h3>{{match.style.name}}</h3><p>{{match.style.character}}</p><p><strong>살펴볼 감각</strong> · {{match.style.explore}}</p><p><strong>비교해 볼 점</strong> · {{match.style.compare}}</p><p class="taste-note">답과 겹친 감각: {{match.labels | join(' · ') if match.labels else '없음'}}</p></article>{% endfor %}</div>{% if ties_beyond %}<p class="taste-note">같은 점수의 다른 스타일도 있습니다. 셋째 결과와 동점인 다른 후보는 화면에 표시되지 않습니다.</p>{% endif %}<h3>내가 고른 감각</h3><ol>{% for prompt, label, note in selections %}<li><strong>{{label}}</strong> · {{note}}</li>{% endfor %}</ol><p class="taste-note">실제 향과 맛은 제품과 사람에 따라 다릅니다. 특정 상품, 구매 가능 여부나 측정된 적합도를 뜻하지 않습니다.</p><a href="/taste-explorer">처음부터 다시 살펴보기</a></div>{% endif %}</section></main>''' + footer + '''</body></html>'''
+    markup = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>취향 탐색 | 우리술</title><style>''' + css + '''</style></head><body><a class="skip-link" href="#main">본문으로 건너뛰기</a><div class="preview">취향 탐색은 정보용입니다. 이 사이트에서는 주문을 받지 않습니다.</div>''' + header + '''<main id="main"><div class="page-hero"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a> / <span aria-current="page">취향 탐색</span></nav><span class="eyebrow">TASTE EXPLORER</span><h1>나의 술 취향 살펴보기</h1><p>일곱 가지 감각을 고르면 위스키·맥주·와인·전통주를 함께 비교해 볼 수 있습니다. 원하는 술 종류를 먼저 고를 필요가 없습니다.</p></div><section class="page-section"><h2>끌리는 맛과 향을 골라 주세요</h2><p class="taste-note">각 답과 스타일의 대표 감각이 겹치는 정도를 비교합니다. 향을 조금 더 살피고 다른 감각도 함께 비교합니다. 동점 후보는 일정한 순서로 나열하며 표시 순서는 우열을 뜻하지 않습니다. 결과는 성격 판정이나 측정된 상품 적합도가 아닌 취향 탐색 안내입니다.</p><form class="taste-form" method="get" action="/taste-explorer#taste-result">{% for key, prompt, options in questions %}<fieldset><legend>{{loop.index}}. {{prompt}}</legend>{% for value, label, note in options %}<label><input type="radio" name="{{key}}" value="{{value}}" required {% if request.args.get(key) == value %}checked{% endif %}><span><strong>{{label}}</strong> · {{note}}</span></label>{% endfor %}</fieldset>{% endfor %}<button type="submit">스타일 살펴보기</button></form>{% if matches %}<div class="taste-result" id="taste-result" role="region" aria-labelledby="taste-result-title" tabindex="-1"><h2 id="taste-result-title">{% if top_tie_count > 1 %}함께 살펴볼 스타일{% else %}먼저 살펴볼 스타일: {{matches[0].style.name}}{% endif %}</h2><p class="taste-note">네 종류의 술을 한 목록에서 비교한 편집형 탐색 결과입니다. {% if top_tie_count > 1 %}가장 앞선 {{top_tie_count}}가지 스타일은 동점이며 표시 순서에 우열이 없습니다.{% else %}가장 많이 겹친 감각의 스타일을 먼저 보여 줍니다.{% endif %}</p><div class="taste-results">{% for match in matches %}<article class="taste-style"><span class="eyebrow">{{loop.index}} · {{match.style.category}}{% if match.tied %} · 동점{% endif %}</span><h3>{{match.style.name}}</h3><p>{{match.style.character}}</p><p><strong>살펴볼 감각</strong> · {{match.style.explore}}</p><p><strong>비교해 볼 점</strong> · {{match.style.compare}}</p><p class="taste-note">답과 겹친 감각: {{match.labels | join(' · ') if match.labels else '없음'}}</p></article>{% endfor %}</div>{% if ties_beyond %}<p class="taste-note">같은 점수의 다른 스타일도 있습니다. 셋째 결과와 동점인 다른 후보는 화면에 표시되지 않습니다.</p>{% endif %}<h3>내가 고른 감각</h3><ol>{% for prompt, label, note in selections %}<li><strong>{{label}}</strong> · {{note}}</li>{% endfor %}</ol><p class="taste-note">실제 향과 맛은 제품과 사람에 따라 다릅니다. 특정 상품, 구매 가능 여부나 측정된 적합도를 뜻하지 않습니다.</p><section aria-labelledby="taste-products-title"><h3 id="taste-products-title">실제 우리술 상품과 비교하기</h3>{% if product_matches %}<p class="taste-note">현재 표시 중인 상품의 소개 문구에서 확인한 감각만 연결했습니다. 스타일과 상품은 다른 술일 수 있으며 같은 향이나 맛을 보장하지 않습니다.</p>{% for item in product_matches %}<article class="taste-style"><h4><a href="/products/{{item.product.number}}">{{item.product.name}}</a></h4><p>{{item.style.name}}에서 살펴본 감각 중 상품 소개와 겹치는 점:</p><ul>{% for label, excerpt in item.shared %}<li>{{label}} · 상품 소개: “{{excerpt}}”</li>{% endfor %}</ul>{% if item.differences %}<p>다르게 살펴볼 감각: {{item.differences | join(' · ')}}</p>{% endif %}<p class="taste-note">상품 상세에서 현재 정보를 확인해 주세요. 이 연결은 구매 가능 여부나 적합도 판정이 아닙니다.</p></article>{% endfor %}{% elif product_state == 'unavailable' %}<p>현재 상품 정보를 확인할 수 없어 감각이 비슷한 상품을 보여 드릴 수 없습니다. 나중에 다시 확인해 주세요.</p>{% else %}<p>현재 소개 문구로 감각을 확인한 우리술 상품이 없어 연결할 상품을 보여 드릴 수 없습니다.</p>{% endif %}</section><a href="/taste-explorer">처음부터 다시 살펴보기</a></div>{% endif %}</section></main>''' + footer + '''</body></html>'''
     response = app.make_response(render_template_string(markup, questions=TASTE_QUESTIONS,
-        selections=selections, matches=matches,
+        selections=selections, matches=matches, product_matches=product_matches,
+        product_state=product_state,
         top_tie_count=top_tie_count,
         ties_beyond=len(ranked) == 3 and len(all_ranked) > 3 and all_ranked[3][0] == ranked[2][0]))
     response.headers['Cache-Control'] = 'no-store'
