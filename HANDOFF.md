@@ -17,8 +17,9 @@ product, requires it to be currently displayed, rejects sample-labeled
 products, and checks each excerpt against its current description. A product
 appears only when at least two evidenced traits overlap one of the displayed
 style archetypes, including aroma or texture; generic acidity and bitterness
-alone cannot create a link. At most eight valid profiles trigger catalog
-lookups per request, so additional entries require a separate bounded design.
+alone cannot create a link. Overlap is checked before contacting Cafe24. At
+most the first eligible curated profile triggers an exact-ID catalog lookup
+per request; showing multiple products requires a later bounded batch design.
 Whitespace-only evidence is rejected. The UI shows the supporting product text and any known
 differences and links to the product detail. Shared broad sensory dimensions
 are not a claim that traditional liquor tastes like sherry-cask whisky, nor a
