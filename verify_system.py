@@ -2197,6 +2197,7 @@ def main():
                             self.assertIn('답과 겹친 감각:', result)
                             self.assertIn('비교해 볼 점', result)
                             self.assertIn('특정 상품, 구매 가능 여부나 측정된 적합도를 뜻하지 않습니다.', result)
+                            self.assertIn('현재 소개 문구로 감각을 확인한 우리술 상품이 없어', result)
                             self.assertNotIn('href="/products', result)
                         # Top and cutoff ties are disclosed, including the omitted fourth profile.
                         tied = self.get('/taste-explorer', query_string=dict(zip(keys,
@@ -2209,6 +2210,59 @@ def main():
                         self.assertEqual(top_tied.count('class="taste-style"'), 4)
                         for name in ('복분자주', '셰리 캐스크 위스키', '카베르네 소비뇽', '피노 누아'):
                             self.assertIn('<h3>' + name + '</h3>', top_tied)
+
+                def test_taste_product_bridge_requires_current_visible_catalog_evidence(self):
+                    from app import TASTE_QUESTIONS
+                    keys = tuple(question[0] for question in TASTE_QUESTIONS)
+                    params = dict(zip(keys, ('fruit', 'round', 'full', 'soft', 'low', 'clear', 'long')))
+                    profile = {73: {'traits': {'aroma': ('fruit', '말린 과일 향'),
+                                                 'body': ('full', '묵직한 질감')}}}
+                    item = {'number': 73, 'name': '실제 상품 <A>',
+                            'summary': '말린 과일 향과 묵직한 질감', 'selling': False,
+                            'purchase_enabled': False}
+                    with patch('app.PRODUCT_SENSORY_PROFILES', profile), patch(
+                            'app.products_for_page', return_value=([item], None, False)) as catalog:
+                        page = self.get('/taste-explorer', query_string=params)
+                        result = page.get_data(as_text=True).split('id="taste-result"', 1)[1]
+                        catalog.assert_called_once_with(product_no=73)
+                        self.assertIn('href="/products/73"', result)
+                        self.assertIn('말린 과일 향', result)
+                        self.assertIn('묵직한 질감', result)
+                        self.assertIn('실제 상품 &lt;A&gt;', result)
+                        self.assertNotIn('실제 상품 <A>', result)
+                        self.assertIn('같은 향이나 맛을 보장하지 않습니다.', result)
+                    for products, notice, summary in (([], None, None),
+                                                       ([dict(item, number=74)], None, None),
+                                                       ([dict(item, summary='곡물 향')], None, None),
+                                                       ([dict(item, name='샘플 술')], None, None),
+                                                       ([], '상품 정보를 불러오지 못했습니다.', None)):
+                        with patch('app.PRODUCT_SENSORY_PROFILES', profile), patch(
+                                'app.products_for_page', return_value=(products, notice, False)):
+                            result = self.get('/taste-explorer', query_string=params).get_data(as_text=True)
+                            self.assertNotIn('href="/products/73"', result)
+                            self.assertIn('상품 정보를 확인할 수 없어' if notice else
+                                          '소개 문구로 감각을 확인한', result)
+                    generic = {73: {'traits': {'body': ('full', '묵직한 질감'),
+                                                 'acidity': ('soft', '부드러운 산미')}}}
+                    with patch('app.PRODUCT_SENSORY_PROFILES', generic), patch(
+                            'app.products_for_page', return_value=(
+                                [dict(item, summary='묵직한 질감, 부드러운 산미')], None, False)):
+                        self.assertNotIn('href="/products/73"', self.get(
+                            '/taste-explorer', query_string=params).get_data(as_text=True))
+                    blank = {73: {'traits': {'aroma': ('fruit', '   '),
+                                               'body': ('full', '묵직한 질감')}}}
+                    with patch('app.PRODUCT_SENSORY_PROFILES', blank), patch(
+                            'app.products_for_page', side_effect=AssertionError('blank evidence fetched')):
+                        self.assertNotIn('href="/products/73"', self.get(
+                            '/taste-explorer', query_string=params).get_data(as_text=True))
+                    from app import MAX_TASTE_PRODUCT_LOOKUPS
+                    many = {number: {'traits': {'aroma': ('fruit', '말린 과일 향'),
+                                                'body': ('full', '묵직한 질감')}}
+                            for number in range(1, MAX_TASTE_PRODUCT_LOOKUPS + 6)}
+                    with patch('app.PRODUCT_SENSORY_PROFILES', many), patch(
+                            'app.products_for_page', return_value=([], None, False)) as catalog:
+                        self.get('/taste-explorer', query_string=params)
+                        self.assertEqual(catalog.call_count, MAX_TASTE_PRODUCT_LOOKUPS)
 
                 def test_taste_explorer_rejects_ambiguous_or_invalid_answers(self):
                     from app import TASTE_QUESTIONS
