@@ -2255,7 +2255,7 @@ def main():
                             'app.products_for_page', side_effect=AssertionError('blank evidence fetched')):
                         self.assertNotIn('href="/products/73"', self.get(
                             '/taste-explorer', query_string=params).get_data(as_text=True))
-                    from app import MAX_TASTE_PRODUCT_LOOKUPS
+                    from app import MAX_TASTE_PRODUCT_LOOKUPS, TASTE_STYLES, taste_product_matches
                     many = {number: {'traits': {'aroma': ('fruit', '말린 과일 향'),
                                                 'body': ('full', '묵직한 질감')}}
                             for number in range(1, MAX_TASTE_PRODUCT_LOOKUPS + 6)}
@@ -2263,6 +2263,21 @@ def main():
                             'app.products_for_page', return_value=([], None, False)) as catalog:
                         self.get('/taste-explorer', query_string=params)
                         self.assertEqual(catalog.call_count, MAX_TASTE_PRODUCT_LOOKUPS)
+                    with patch('app.PRODUCT_SENSORY_PROFILES', many), patch(
+                            'app.products_for_page', return_value=(
+                                [], '상품 정보를 불러오지 못했습니다.', False)) as catalog:
+                        result = self.get('/taste-explorer', query_string=params).get_data(as_text=True)
+                        self.assertEqual(catalog.call_count, 1)
+                        self.assertIn('상품 정보를 확인할 수 없어', result)
+                    sherry = next(style for style in TASTE_STYLES if style['key'] == 'whisky-sherry')
+                    unrelated = {72: {'traits': {'aroma': ('smoke', '연기 향'),
+                                                  'texture': ('bubbly', '탄산 질감')}}, **profile}
+                    with patch('app.PRODUCT_SENSORY_PROFILES', unrelated), patch(
+                            'app.products_for_page', return_value=([item], None, False)) as catalog:
+                        found, state = taste_product_matches([sherry])
+                        self.assertEqual(state, 'ready')
+                        self.assertEqual(len(found), 1)
+                        catalog.assert_called_once_with(product_no=73)
 
                 def test_taste_explorer_rejects_ambiguous_or_invalid_answers(self):
                     from app import TASTE_QUESTIONS
