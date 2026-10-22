@@ -1,5 +1,16 @@
 # Handoff
 
+## Synthetic order CSRF validation
+
+The legacy synthetic order creation and fulfillment-history POST routes now use
+the same ASCII-safe CSRF comparison as the rehearsal routes. A non-ASCII form
+token returns HTTP 403 instead of raising an exception; valid tokens and the
+existing route behavior are unchanged. The isolated verifier checks both JSON
+and HTML variants of the legacy routes and confirms rejected requests leave
+the synthetic order, item, state, event, and notice tables unchanged. This is
+an administrator-only, default-off synthetic workflow; verification uses a
+disposable PostgreSQL schema and no live provider request.
+
 ## Synthetic rehearsal request recovery
 
 The administrator-only `/admin/orders/test/rehearsal` review, confirmation,

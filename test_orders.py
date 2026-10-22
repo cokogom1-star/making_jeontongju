@@ -251,7 +251,7 @@ def rehearsal_drafts():
     return session.get('test_rehearsal_drafts', {})
 
 
-def valid_rehearsal_csrf():
+def valid_test_order_csrf():
     token = session.get('test_order_csrf', '')
     submitted = request.form.get('csrf', '')
     if not isinstance(token, str) or not isinstance(submitted, str) or not token:
@@ -398,7 +398,7 @@ def start_rehearsal():
 @protected
 def review_rehearsal():
     """Validate the fixture basket and show a read-only confirmation step."""
-    if not valid_rehearsal_csrf():
+    if not valid_test_order_csrf():
         return rehearsal_error(403)
     order_id = request.form.get('order_id', '')
     drafts = rehearsal_drafts()
@@ -424,7 +424,7 @@ def review_rehearsal():
 @protected
 def confirm_rehearsal():
     """Persist exactly the reviewed basket through the existing atomic path."""
-    if not valid_rehearsal_csrf():
+    if not valid_test_order_csrf():
         return rehearsal_error(403)
     if set(request.form.keys()) != {'csrf', 'order_id'} or any(
             len(request.form.getlist(key)) != 1 for key in request.form.keys()):
@@ -497,8 +497,7 @@ Slack 알림은 대기열에 기록되며, 별도 설정된 테스트 발송기�
 <input type="hidden" name="order_id" value="{{order_id}}">
 <button type="submit">합성 주문 기록</button></form></html>''',
                                       csrf=session['test_order_csrf'], order_id=session['test_order_id'])
-    token = session.get('test_order_csrf', '')
-    if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
+    if not valid_test_order_csrf():
         abort(403)
     try:
         scenario = parse_scenario(request.form)
@@ -568,8 +567,7 @@ def test_order_history(order_id):
         if result is None:
             abort(404)
         return result
-    token = session.get('test_order_csrf', '')
-    if not token or not secrets.compare_digest(token, request.form.get('csrf', '')):
+    if not valid_test_order_csrf():
         abort(403)
     try:
         expected_version = int(request.form.get('expected_version', ''))

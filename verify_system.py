@@ -451,6 +451,39 @@ def main():
                                      {'delivered': 0, 'failed': 0})
                     sender.assert_not_called()
 
+                def test_synthetic_legacy_posts_reject_unicode_csrf_without_writes(self):
+                    path = '/admin/orders/test'
+                    self.assertEqual(self.get(path).status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                        order_id = sess['test_order_id']
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_test_order_state', 'ourisul_test_order_event',
+                              'ourisul_order_notice')
+
+                    def saved():
+                        with cafe24.database() as conn:
+                            return {table: conn.execute(
+                                f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                for table in tables}
+
+                    empty = saved()
+                    for url in (path, path + '?view=html'):
+                        response = self.post(url, data={'csrf': '잘못된 값', 'order_id': order_id})
+                        self.assertEqual(response.status_code, 403)
+                        self.assertEqual(saved(), empty)
+
+                    created = self.post(path, data={'csrf': csrf, 'order_id': order_id})
+                    self.assertEqual(created.status_code, 200)
+                    persisted = saved()
+                    self.assertNotEqual(persisted, empty)
+                    history = f'{path}/{order_id}/history'
+                    transition = {'csrf': '잘못된 값', 'status': 'TEST_PREPARED',
+                                  'expected_version': '0', 'request_key': 'unicode-csrf'}
+                    for url in (history, history + '?view=html'):
+                        self.assertEqual(self.post(url, data=transition).status_code, 403)
+                        self.assertEqual(saved(), persisted)
+
                 def test_synthetic_order_notice_failure_rolls_back_order(self):
                     with cafe24.database() as conn:
                         conn.execute("ALTER TABLE ourisul_order_notice ADD CONSTRAINT no_synthetic "
