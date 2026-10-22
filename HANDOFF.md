@@ -1,5 +1,20 @@
 # Handoff
 
+## Synthetic status form recovery
+
+The administrator-only synthetic status transition POST now returns a Korean
+recovery page for HTML requests with an expired or duplicate CSRF token (403),
+malformed or duplicate status/version/request-key fields (400), or an unknown
+order (404). The page links to the exact synthetic timeline and the admin ID
+lookup, so a fresh form can be loaded before retrying. These responses do not
+claim that a change was saved. JSON requests keep their previous HTTP status
+codes and response shape. Duplicate transition fields are rejected for both
+views before any status transition; a duplicate CSRF token fails the existing
+CSRF guard. The isolated PostgreSQL verifier compares saved status and event
+rows before and after each rejected request and confirms a subsequent valid
+transition succeeds. This is only a synthetic rehearsal and does not contact
+a carrier, payment provider, or Slack.
+
 ## Four-letter taste shorthand
 
 The public seven-question result now starts with a four-letter taste code and

@@ -111,6 +111,29 @@ TRACKING_CONFLICT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-
 <p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">최신 상태 보기</a></p>
 </main></body></html>''')
 
+TRACKING_POST_RECOVERY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>{{title}} | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>{{title}}</h1>
+<p>{{guidance}}</p>
+<p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">합성 주문 상태 다시 확인하기</a></p>
+<p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 ID 조회하기</a></p>
+</main></body></html>''')
+
+TRACKING_POST_ERRORS = {
+    400: ('상태 변경 요청을 확인해 주세요', '입력 항목을 확인하고 최신 상태 화면에서 다시 시도해 주세요.'),
+    403: ('상태 변경 요청이 만료되었습니다', '최신 상태 화면을 열어 새 요청으로 다시 시도해 주세요.'),
+    404: ('합성 주문을 찾을 수 없습니다', '주문 ID를 확인하고 관리자 조회 화면에서 다시 찾아 주세요.'),
+}
+
+
+def tracking_post_error(status, order_id):
+    if request.args.get('view') != 'html':
+        abort(status)
+    title, guidance = TRACKING_POST_ERRORS[status]
+    return render_template_string(TRACKING_POST_RECOVERY, title=title,
+                                  guidance=guidance, order_id=order_id), status
+
 TRACKING_CREATION_CONFLICT = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>가상 품목 기록 확인 | 우리술</title>'''
@@ -252,6 +275,8 @@ def rehearsal_drafts():
 
 
 def valid_test_order_csrf():
+    if len(request.form.getlist('csrf')) != 1:
+        return False
     token = session.get('test_order_csrf', '')
     submitted = request.form.get('csrf', '')
     if not isinstance(token, str) or not isinstance(submitted, str) or not token:
@@ -568,20 +593,23 @@ def test_order_history(order_id):
             abort(404)
         return result
     if not valid_test_order_csrf():
-        abort(403)
+        return tracking_post_error(403, order_id)
     try:
+        if any(len(request.form.getlist(key)) != 1
+               for key in ('status', 'expected_version', 'request_key')):
+            return tracking_post_error(400, order_id)
         expected_version = int(request.form.get('expected_version', ''))
         result = fulfillment.transition(order_id, request.form.get('status'),
                                         expected_version, request.form.get('request_key'))
     except (ValueError, TypeError) as exc:
         if str(exc) == 'Synthetic order not found':
-            abort(404)
+            return tracking_post_error(404, order_id)
         if str(exc) in ('Stale synthetic order version', 'Invalid synthetic status transition',
                         'Request key reused for another status'):
             if request.args.get('view') == 'html':
                 return render_template_string(TRACKING_CONFLICT, order_id=order_id), 409
             abort(409)
-        abort(400)
+        return tracking_post_error(400, order_id)
     if request.args.get('view') == 'html':
         return redirect(url_for('test_orders.test_order_history', order_id=order_id,
                                 view='html'), code=303)

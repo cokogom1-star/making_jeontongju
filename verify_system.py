@@ -1334,6 +1334,53 @@ def main():
                         self.assertEqual(form_data(direct)['csrf'], sess['test_order_csrf'])
                     self.assertEqual(self.post(direct_path, data=form_data(direct)).status_code, 303)
 
+                def test_synthetic_tracking_post_recovery_and_duplicate_fields_do_not_write(self):
+                    self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    base = f'/admin/orders/test/{order_id}/history'
+                    valid = {'csrf': csrf, 'status': 'TEST_PREPARED',
+                             'expected_version': '0', 'request_key': 'recover-post'}
+
+                    with cafe24.database() as conn:
+                        before = (conn.execute('SELECT * FROM ourisul_test_order_state ORDER BY order_id').fetchall(),
+                                  conn.execute('SELECT * FROM ourisul_test_order_event ORDER BY order_id, version').fetchall())
+                    cases = (
+                        (dict(valid, csrf='expired'), 403),
+                        (MultiDict(list(valid.items()) + [('csrf', 'expired')]), 403),
+                        (dict(valid, expected_version='invalid'), 400),
+                        (MultiDict(list(valid.items()) + [('status', 'TEST_DELIVERED')]), 400),
+                        (MultiDict(list(valid.items()) + [('expected_version', '1')]), 400),
+                        (MultiDict(list(valid.items()) + [('request_key', 'another')]), 400),
+                    )
+                    for data, status in cases:
+                        for suffix in ('?view=html', ''):
+                            with self.subTest(status=status, suffix=suffix, data=data):
+                                response = self.post(base + suffix, data=data)
+                                self.assertEqual(response.status_code, status)
+                                if suffix:
+                                    html = response.get_data(as_text=True)
+                                    self.assertIn('합성 주문 상태 다시 확인하기', html)
+                                    self.assertIn('합성 주문 ID 조회하기', html)
+                                    self.assertIn(base + suffix, html)
+                                    self.assertIn('noindex,nofollow', html)
+                                else:
+                                    self.assertNotIn('합성 주문 상태 다시 확인하기',
+                                                     response.get_data(as_text=True))
+                    missing_id = 'TEST-' + secrets.token_hex(16)
+                    missing = self.post(f'/admin/orders/test/{missing_id}/history?view=html', data=valid)
+                    self.assertEqual(missing.status_code, 404)
+                    self.assertIn('합성 주문 ID 조회하기', missing.get_data(as_text=True))
+                    self.assertEqual(self.post(f'/admin/orders/test/{missing_id}/history',
+                                               data=valid).status_code, 404)
+                    with cafe24.database() as conn:
+                        after = (conn.execute('SELECT * FROM ourisul_test_order_state ORDER BY order_id').fetchall(),
+                                 conn.execute('SELECT * FROM ourisul_test_order_event ORDER BY order_id, version').fetchall())
+                    self.assertEqual(after, before)
+                    self.assertEqual(self.post(base + '?view=html', data=valid).status_code, 303)
+
                 def test_synthetic_fulfillment_rejects_unknown_and_bad_input_without_writes(self):
                     self.assertEqual(self.get('/admin/orders/test').status_code, 200)
                     with self.client.session_transaction() as sess:
