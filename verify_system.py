@@ -2354,6 +2354,54 @@ def main():
                         self.assertEqual(len(found), 1)
                         catalog.assert_called_once_with(product_no=73)
 
+                def test_taste_code_tracks_answers_and_preserves_style_detail(self):
+                    from app import TASTE_QUESTIONS, rank_taste_styles, taste_code
+                    keys = tuple(question[0] for question in TASTE_QUESTIONS)
+                    # Independent reference: the four positions depend on aroma,
+                    # sweetness, body, and finish, in that order.
+                    aroma = {'fruit': 'F', 'floral': 'F', 'grain': 'G', 'roast': 'G',
+                             'smoke': 'G', 'spice': 'G'}
+                    sweetness = {'dry': 'D', 'round': 'R', 'sweet': 'S'}
+                    body = {'light': 'L', 'medium': 'M', 'full': 'F'}
+                    finish = {'clean': 'C', 'long': 'L'}
+                    codes = set()
+                    for answers in product(*(tuple(option[0] for option in q[2])
+                                             for q in TASTE_QUESTIONS)):
+                        expected = (aroma[answers[0]] + sweetness[answers[1]] +
+                                    body[answers[2]] + finish[answers[6]])
+                        actual = taste_code(answers)
+                        self.assertEqual(actual['letters'], expected)
+                        self.assertEqual([part['letter'] for part in actual['parts']], list(expected))
+                        codes.add(expected)
+                    self.assertEqual(len(codes), 36)
+
+                    base = ('fruit', 'round', 'full', 'soft', 'low', 'clear', 'long')
+                    cases = ((base, 'FRFL', '과일 향을 골랐습니다.'),
+                             (('floral', *base[1:]), 'FRFL', '꽃·허브 향을 골랐습니다.'),
+                             (('spice', *base[1:]), 'GRFL', '향신료·나무 향을 골랐습니다.'),
+                             ((base[0], 'dry', *base[2:]), 'FDFL', '단맛이 적은 쪽'),
+                             ((base[0], 'sweet', *base[2:]), 'FSFL', '선명한 단맛'),
+                             ((*base[:2], 'light', *base[3:]), 'FRLL', '가벼운 무게감'),
+                             ((*base[:2], 'medium', *base[3:]), 'FRML', '중간 무게감'),
+                             ((*base[:6], 'clean'), 'FRFC', '깔끔하게 끝나는'))
+                    with patch('app.products_for_page', side_effect=AssertionError('catalog accessed')), patch.object(
+                            cafe24, 'database', side_effect=AssertionError('database accessed')):
+                        self.assertNotIn('나의 취향 코드:', self.get('/taste-explorer').get_data(as_text=True))
+                        for answers, expected, reason in cases:
+                            page = self.get('/taste-explorer', query_string=dict(zip(keys, answers)))
+                            self.assertEqual(page.status_code, 200)
+                            result = page.get_data(as_text=True).split('id="taste-result"', 1)[1]
+                            self.assertIn('나의 취향 코드: <span class="taste-code">' + expected, result)
+                            self.assertIn(reason, result)
+                            self.assertIn('산미·쌉쌀함·질감은 코드 네 글자에는 없지만', result)
+                            self.assertIn('성격 유형이나 측정된 적합도가 아닙니다', result)
+                            self.assertIn('답과 겹친 감각:', result)
+                            self.assertIn('실제 우리술 상품과 비교하기', result)
+                        changed = list(base)
+                        changed[3:6] = ['bright', 'pronounced', 'bubbly']
+                        self.assertEqual(taste_code(changed)['letters'], 'FRFL')
+                        self.assertNotEqual(rank_taste_styles(base), rank_taste_styles(changed))
+
                 def test_taste_explorer_rejects_ambiguous_or_invalid_answers(self):
                     from app import TASTE_QUESTIONS
                     valid = dict((q[0], q[2][0][0]) for q in TASTE_QUESTIONS)

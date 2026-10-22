@@ -1,5 +1,25 @@
 # Handoff
 
+## Four-letter taste shorthand
+
+The public seven-question result now starts with a four-letter taste code and
+explains each letter from the visitor's selected answer. Positions are aroma
+(F: fruit/flower including herbs; G: grain/roast/smoke/spice/wood), sweetness
+(D: dry; R: round; S: distinctly sweet), body (L: light; M: medium; F: full),
+and finish (C: clean; L: lingering). The middle sweetness and body choices
+keep their own letters. These finite answer partitions have no ties. The code
+is a playful sensory shorthand, not a personality test or measured fit.
+
+Acidity, bitterness, and texture still contribute to the unchanged weighted
+ranking across 28 editorial whisky, beer, wine, and traditional-liquor styles;
+the selected-answer recap and detailed comparison cards remain. The separate
+evidence-gated product section stays empty until actual product evidence is
+curated. The verifier independently checks all 1,296 answer combinations,
+the 36 possible codes, selected answer explanations, style-detail continuity,
+and no catalog/database contact for unprofiled results. It uses a disposable
+PostgreSQL schema and fake provider adapters; browser JavaScript and real
+provider connectivity remain separate checks.
+
 ## Synthetic order CSRF validation
 
 The legacy synthetic order creation and fulfillment-history POST routes now use
