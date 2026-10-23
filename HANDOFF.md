@@ -7,8 +7,8 @@ recovery page for HTML requests with an expired or duplicate CSRF token (403),
 malformed or duplicate status/version/request-key fields (400), or an unknown
 order (404). The page links to the exact synthetic timeline and the admin ID
 lookup, so a fresh form can be loaded before retrying. These responses do not
-claim that a change was saved. JSON requests keep their previous HTTP status
-codes and response shape. Duplicate transition fields are rejected for both
+claim that a change was saved. Existing non-duplicate invalid JSON requests
+keep their previous status codes and response shape. Duplicate transition fields are rejected for both
 views before any status transition; a duplicate CSRF token is rejected by the
 tracking POST with 403. The separate synthetic creation route retains its
 existing 400 response for duplicate CSRF fields. The isolated PostgreSQL verifier compares saved status and event
