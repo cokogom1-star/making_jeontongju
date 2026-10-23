@@ -1,5 +1,21 @@
 # Handoff
 
+## Synthetic rehearsal confirmation database recovery
+
+An administrator's confirmed fictional basket now returns a private HTTP 503
+recovery page if the database raises `psycopg.OperationalError` while recording
+it. The page displays the same synthetic order ID and links directly to its
+read-only timeline. A connection error can occur after commit, so the page
+does not assert that the order was unsaved; the administrator should inspect
+that ID before submitting the same confirmation again. The reviewed session
+draft remains available, and exact-ID replay uses the existing idempotent
+record path. Other validation and conflict responses are unchanged. The
+disposable-PostgreSQL verifier injects both a failure before writing and an
+ambiguous failure after commit, then checks the exact-ID retry and all five
+synthetic order, item, state, event, and notice tables. This rehearsal does
+not create a real purchase or contact a provider. CI must pass on the exact
+PR head before promotion; no browser or live provider behavior is claimed.
+
 ## Synthetic status form recovery
 
 The administrator-only synthetic status transition POST now returns a Korean

@@ -796,6 +796,66 @@ def main():
                     recovery(self.post(base + '/confirm', data=confirm), 403)
                     self.assertEqual(saved(), persisted)
 
+                def test_rehearsal_confirmation_db_failure_preserves_exact_retry(self):
+                    base = '/admin/orders/test/rehearsal'
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_order_notice', 'ourisul_test_order_state',
+                              'ourisul_test_order_event')
+
+                    def saved():
+                        with cafe24.database() as conn:
+                            return {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                    for table in tables}
+
+                    self.assertEqual(self.get(base).status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                        order_id = sess['test_rehearsal_ids'][-1]
+                    basket = {'csrf': csrf, 'order_id': order_id, 'scenario': 'fixed-v1',
+                              'SYNTHETIC-CHEONGJU': '2', 'SYNTHETIC-TAKJU': '1'}
+                    confirm = {'csrf': csrf, 'order_id': order_id}
+                    self.assertEqual(self.post(base + '/review', data=basket).status_code, 200)
+                    before = saved()
+                    with patch.object(test_orders, 'record_test_order',
+                                      side_effect=psycopg.OperationalError('database unavailable')):
+                        unavailable = self.post(base + '/confirm', data=confirm)
+                    self.assertEqual(unavailable.status_code, 503)
+                    body = unavailable.get_data(as_text=True)
+                    self.assertIn(order_id, body)
+                    self.assertIn('저장 여부를 ID 조회로 확인', body)
+                    self.assertIn(f'/admin/orders/test/{order_id}/history?view=html', body)
+                    self.assertNotIn('가상 기록 확인</h1>', body)
+                    self.assertEqual(unavailable.headers['Cache-Control'], 'no-store')
+                    self.assertEqual(saved(), before)
+                    self.assertEqual(self.post(base + '/confirm', data=confirm).status_code, 303)
+                    persisted = saved()
+                    self.assertNotEqual(persisted, before)
+
+                    self.assertEqual(self.get(base).status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        second_id = sess['test_rehearsal_ids'][-1]
+                    second_basket = {**basket, 'order_id': second_id}
+                    second_confirm = {**confirm, 'order_id': second_id}
+                    self.assertEqual(self.post(base + '/review', data=second_basket).status_code, 200)
+
+                    original_record = test_orders.record_test_order
+
+                    def committed_then_disconnected(*args, **kwargs):
+                        original_record(*args, **kwargs)
+                        raise psycopg.OperationalError('connection lost after commit')
+
+                    with patch.object(test_orders, 'record_test_order',
+                                      side_effect=committed_then_disconnected):
+                        uncertain = self.post(base + '/confirm', data=second_confirm)
+                    self.assertEqual(uncertain.status_code, 503)
+                    self.assertIn(second_id, uncertain.get_data(as_text=True))
+                    committed = saved()
+                    self.assertNotEqual(committed, persisted)
+                    replay = self.post(base + '/confirm', data=second_confirm)
+                    self.assertEqual(replay.status_code, 303)
+                    self.assertEqual(saved(), committed)
+                    self.assertEqual(self.get(f'{base}/{second_id}/receipt').status_code, 200)
+
                 def test_synthetic_scenario_persists_atomically_and_replays_exact_payload(self):
                     path = '/admin/orders/test?view=html'
                     self.assertEqual(self.client.get(path).status_code, 401)
