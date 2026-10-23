@@ -275,8 +275,6 @@ def rehearsal_drafts():
 
 
 def valid_test_order_csrf():
-    if len(request.form.getlist('csrf')) != 1:
-        return False
     token = session.get('test_order_csrf', '')
     submitted = request.form.get('csrf', '')
     if not isinstance(token, str) or not isinstance(submitted, str) or not token:
@@ -592,7 +590,7 @@ def test_order_history(order_id):
         if result is None:
             abort(404)
         return result
-    if not valid_test_order_csrf():
+    if len(request.form.getlist('csrf')) != 1 or not valid_test_order_csrf():
         return tracking_post_error(403, order_id)
     try:
         if any(len(request.form.getlist(key)) != 1
