@@ -1,5 +1,23 @@
 # Handoff
 
+## Synthetic status transition database recovery
+
+An administrator's valid synthetic status transition POST now returns HTTP 503
+if PostgreSQL raises `psycopg.OperationalError`. The private HTML recovery page
+shows the exact synthetic order ID and links to its read-only timeline. It
+preserves the original CSRF token, status, expected version, and request key in
+an explicit retry form. The administrator should inspect the timeline first:
+a connection failure may happen after commit, and this page cannot establish
+whether the status changed. Reusing the exact request key is idempotent; a
+new timeline form may represent the next simulated step. The default POST
+returns a JSON 503 with the order ID and exact-request retry guidance, without
+echoing the CSRF token. Its successful response shape is unchanged. Existing validation
+and conflict responses remain unchanged. The disposable-PostgreSQL verifier
+injects failures before writing and after commit for both views, then checks
+exact-key replay and all five synthetic order, item, state, event, and notice
+tables. This is only a rehearsal; no provider is contacted. Exact-head CI is
+required before promotion, and no browser behavior is claimed here.
+
 ## Synthetic rehearsal confirmation database recovery
 
 An administrator's confirmed fictional basket now returns a private HTTP 503

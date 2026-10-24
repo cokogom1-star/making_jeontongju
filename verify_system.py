@@ -1441,6 +1441,78 @@ def main():
                     self.assertEqual(after, before)
                     self.assertEqual(self.post(base + '?view=html', data=valid).status_code, 303)
 
+                def test_synthetic_tracking_db_failure_preserves_exact_retry(self):
+                    self.assertEqual(self.get('/admin/orders/test?view=html').status_code, 200)
+                    with self.client.session_transaction() as sess:
+                        csrf = sess['test_order_csrf']
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_test_order_state', 'ourisul_test_order_event',
+                              'ourisul_order_notice')
+
+                    def saved():
+                        with cafe24.database() as conn:
+                            return {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                    for table in tables}
+
+                    original_transition = fulfillment.transition
+                    for view in ('html', 'json'):
+                        for failure in ('before_write', 'after_commit'):
+                            with self.subTest(view=view, failure=failure):
+                                order_id = 'TEST-' + secrets.token_hex(16)
+                                self.assertTrue(test_orders.record_test_order(order_id))
+                                path = f'/admin/orders/test/{order_id}/history'
+                                if view == 'html':
+                                    path += '?view=html'
+                                payload = {'csrf': csrf, 'status': 'TEST_PREPARED',
+                                           'expected_version': '00' if view == 'html' else '0',
+                                           'request_key': f'db-retry-{view}-{failure}'}
+                                before = saved()
+
+                                def disconnected(*args, **kwargs):
+                                    if failure == 'after_commit':
+                                        original_transition(*args, **kwargs)
+                                    raise psycopg.OperationalError('connection unavailable')
+
+                                with patch.object(fulfillment, 'transition', side_effect=disconnected):
+                                    unavailable = self.post(path, data=payload)
+                                self.assertEqual(unavailable.status_code, 503)
+                                self.assertEqual(unavailable.headers['Cache-Control'], 'no-store')
+                                body = unavailable.get_data(as_text=True)
+                                if view == 'html':
+                                    self.assertIn(order_id, body)
+                                    self.assertIn('저장 여부를 확인할 수 없습니다', body)
+                                    self.assertIn(f'/admin/orders/test/{order_id}/history?view=html', body)
+                                    fields = dict(re.findall(
+                                        r'<input type="hidden" name="([^"]+)" value="([^"]*)">', body))
+                                    self.assertEqual(fields, payload)
+                                    self.assertIn('noindex,nofollow', body)
+                                else:
+                                    self.assertEqual(unavailable.mimetype, 'application/json')
+                                    self.assertEqual(unavailable.json['order_id'], order_id)
+                                    self.assertIn('same status, expected_version, and request_key',
+                                                  unavailable.json['retry'])
+                                    self.assertNotIn(csrf, body)
+                                uncertain = saved()
+                                if failure == 'before_write':
+                                    self.assertEqual(uncertain, before)
+                                else:
+                                    self.assertNotEqual(uncertain, before)
+                                    self.assertEqual(fulfillment.history(order_id)['version'], 1)
+                                replay = self.post(path, data=payload)
+                                self.assertEqual(replay.status_code, 303 if view == 'html' else 200)
+                                if view == 'json':
+                                    self.assertEqual(replay.json['created'], failure == 'before_write')
+                                    self.assertEqual(replay.json['version'], 1)
+                                after = saved()
+                                if failure == 'after_commit':
+                                    self.assertEqual(after, uncertain)
+                                else:
+                                    self.assertNotEqual(after, before)
+                                self.assertEqual(fulfillment.history(order_id)['version'], 1)
+                                self.assertEqual(self.post(path, data=payload).status_code,
+                                                 303 if view == 'html' else 200)
+                                self.assertEqual(saved(), after)
+
                 def test_synthetic_fulfillment_rejects_unknown_and_bad_input_without_writes(self):
                     self.assertEqual(self.get('/admin/orders/test').status_code, 200)
                     with self.client.session_transaction() as sess:

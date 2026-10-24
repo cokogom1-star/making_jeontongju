@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 
-from flask import Blueprint, abort, redirect, render_template_string, request, session, url_for
+from flask import Blueprint, abort, jsonify, redirect, render_template_string, request, session, url_for
 from psycopg import OperationalError
 from psycopg.errors import UndefinedTable
 
@@ -119,6 +119,22 @@ TRACKING_POST_RECOVERY = ('''<!doctype html><html lang="ko"><head><meta charset=
 <p>{{guidance}}</p>
 <p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">합성 주문 상태 다시 확인하기</a></p>
 <p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 ID 조회하기</a></p>
+</main></body></html>''')
+
+TRACKING_DB_RECOVERY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>합성 상태 기록 확인 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>합성 상태 기록을 확인해 주세요</h1>
+<p>데이터베이스 연결이 끊겨 이 요청의 저장 여부를 확인할 수 없습니다. 같은 합성 주문 ID의 최신 상태와 변경 이력을 먼저 확인해 주세요.</p>
+<p>주문 ID: <strong>{{order_id}}</strong></p>
+<p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">이 ID의 최신 상태 확인하기</a></p>
+<p>이 요청을 다시 제출해야 한다면 아래 버튼은 원래 상태, 버전, 요청 키를 그대로 사용합니다. 새 상태 단계의 버튼을 누르기 전에 이력을 확인해 주세요.</p>
+<form method="post" action="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">
+<input type="hidden" name="csrf" value="{{csrf}}">
+<input type="hidden" name="status" value="{{status}}">
+<input type="hidden" name="expected_version" value="{{expected_version}}">
+<input type="hidden" name="request_key" value="{{request_key}}">
+<button type="submit">같은 요청 다시 제출</button></form>
 </main></body></html>''')
 
 TRACKING_POST_ERRORS = {
@@ -607,6 +623,15 @@ def test_order_history(order_id):
         expected_version = int(request.form.get('expected_version', ''))
         result = fulfillment.transition(order_id, request.form.get('status'),
                                         expected_version, request.form.get('request_key'))
+    except OperationalError:
+        if request.args.get('view') == 'html':
+            return render_template_string(
+                TRACKING_DB_RECOVERY, order_id=order_id, csrf=request.form['csrf'],
+                status=request.form['status'], expected_version=request.form['expected_version'],
+                request_key=request.form['request_key']), 503
+        return jsonify({'error': 'Synthetic status save could not be confirmed',
+                        'order_id': order_id,
+                        'retry': 'Inspect this order, then retry the same status, expected_version, and request_key'}), 503
     except (ValueError, TypeError) as exc:
         if str(exc) == 'Synthetic order not found':
             return tracking_post_error(404, order_id)
