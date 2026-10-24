@@ -168,6 +168,24 @@ TRACKING_NOT_FOUND = ('''<!doctype html><html lang="ko"><head><meta charset="utf
 <p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 다시 조회하기</a></p>
 </main></body></html>''')
 
+TRACKING_READ_RECOVERY = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>합성 주문 조회 확인 | 우리술</title>'''
+    + TRACKING_STYLE + '''</head><body><main><h1>합성 주문 상태를 지금 확인할 수 없습니다</h1>
+<p>데이터베이스 연결 오류로 이 ID의 현재 기록을 읽지 못했습니다. 저장 상태나 배송 단계를 이 화면에서 판단하지 마세요.</p>
+<p>주문 ID: <strong>{{order_id}}</strong></p>
+<p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">같은 ID 다시 조회하기</a></p>
+<p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 ID 조회하기</a></p>
+</main></body></html>''')
+
+
+def tracking_read_error(order_id, view):
+    if view == 'html':
+        return render_template_string(TRACKING_READ_RECOVERY, order_id=order_id), 503
+    return jsonify({'error': 'Synthetic order history is temporarily unavailable',
+                    'order_id': order_id,
+                    'retry': 'Retry reading this same order ID'}), 503
+
 REHEARSAL_FORM = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>가상 주문 연습 | 우리술</title>'''
@@ -582,6 +600,8 @@ def test_order_history(order_id):
         if view in ('snapshot', 'html'):
             try:
                 snapshot = order_snapshot(order_id)
+            except OperationalError:
+                return tracking_read_error(order_id, view)
             except ValueError as exc:
                 if str(exc) in ('Synthetic order tables are not initialized',
                                 'Synthetic item table not initialized'):
@@ -609,6 +629,8 @@ def test_order_history(order_id):
                                           request_key=secrets.token_urlsafe(24))
         try:
             result = fulfillment.history(order_id)
+        except OperationalError:
+            return tracking_read_error(order_id, view)
         except ValueError:
             abort(404)
         if result is None:

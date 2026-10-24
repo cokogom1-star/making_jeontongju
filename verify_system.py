@@ -1534,6 +1534,79 @@ def main():
                         conn.execute('DROP TABLE ourisul_test_order_event, ourisul_test_order_state')
                     self.assertEqual(self.get(path).status_code, 404)
 
+                def test_synthetic_history_read_db_failure_is_private_and_read_only(self):
+                    order_id = 'TEST-' + secrets.token_hex(16)
+                    self.assertTrue(test_orders.record_test_order(order_id, scenario={
+                        'SYNTHETIC-CHEONGJU': 2, 'SYNTHETIC-TAKJU': 1}))
+                    path = f'/admin/orders/test/{order_id}/history'
+                    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+                              'ourisul_test_order_state', 'ourisul_test_order_event',
+                              'ourisul_order_notice')
+
+                    def saved():
+                        with cafe24.database() as conn:
+                            return {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                                    for table in tables}
+
+                    before = saved()
+                    original_snapshot = test_orders.order_snapshot
+                    original_history = fulfillment.history
+                    for view in ('html', 'snapshot', 'default'):
+                        url = path + (f'?view={view}' if view != 'default' else '')
+                        target = test_orders if view != 'default' else fulfillment
+                        method = 'order_snapshot' if view != 'default' else 'history'
+                        original = original_snapshot if view != 'default' else original_history
+                        for failure in ('before_read', 'after_read'):
+                            with self.subTest(view=view, failure=failure):
+                                def disconnected(*args, **kwargs):
+                                    if failure == 'after_read':
+                                        self.assertIsNotNone(original(*args, **kwargs))
+                                    raise psycopg.OperationalError('connection unavailable')
+
+                                with patch.object(target, method, side_effect=disconnected):
+                                    unavailable = self.get(url)
+                                self.assertEqual(unavailable.status_code, 503)
+                                self.assertEqual(unavailable.headers['Cache-Control'], 'no-store')
+                                self.assertEqual(unavailable.headers['Referrer-Policy'], 'no-referrer')
+                                self.assertEqual(unavailable.headers['X-Content-Type-Options'], 'nosniff')
+                                body = unavailable.get_data(as_text=True)
+                                if view == 'html':
+                                    self.assertEqual(unavailable.mimetype, 'text/html')
+                                    self.assertIn(order_id, body)
+                                    self.assertIn('현재 기록을 읽지 못했습니다', body)
+                                    self.assertNotIn('합성 주문을 찾을 수 없습니다', body)
+                                    self.assertIn(f'{path}?view=html', body)
+                                    self.assertIn('noindex,nofollow', body)
+                                    self.assertNotIn('<form method="post"', body)
+                                else:
+                                    self.assertEqual(unavailable.mimetype, 'application/json')
+                                    self.assertEqual(unavailable.json['order_id'], order_id)
+                                    self.assertIn('Retry reading this same order ID',
+                                                  unavailable.json['retry'])
+                                    self.assertNotIn('not found', body.lower())
+                                self.assertEqual(saved(), before)
+                        recovered = self.get(url)
+                        self.assertEqual(recovered.status_code, 200)
+                        if view == 'default':
+                            self.assertEqual(set(recovered.json),
+                                             {'order_id', 'status', 'version', 'events'})
+                        elif view == 'snapshot':
+                            self.assertEqual(set(recovered.json),
+                                             {'order_id', 'status', 'version', 'events', 'items',
+                                              'notice', 'is_test', 'source'})
+                        self.assertEqual(saved(), before)
+                    with patch.object(test_orders, 'order_snapshot',
+                                      side_effect=psycopg.OperationalError('connection unavailable')):
+                        escaped = self.get('/admin/orders/test/bad%3Cscript%3E/history?view=html')
+                    self.assertEqual(escaped.status_code, 503)
+                    self.assertIn('bad&lt;script&gt;', escaped.get_data(as_text=True))
+                    self.assertNotIn('bad<script>', escaped.get_data(as_text=True))
+                    missing = 'TEST-' + secrets.token_hex(16)
+                    for suffix in ('?view=html', '?view=snapshot', ''):
+                        self.assertEqual(self.get(f'/admin/orders/test/{missing}/history{suffix}').status_code,
+                                         404)
+                    self.assertEqual(saved(), before)
+
                 def test_synthetic_fulfillment_history_uses_one_snapshot(self):
                     order_id = 'TEST-' + secrets.token_hex(16)
                     self.assertTrue(test_orders.record_test_order(order_id))

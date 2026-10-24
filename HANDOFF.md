@@ -1,5 +1,24 @@
 # Handoff
 
+## Synthetic history read database recovery
+
+The administrator-only `GET /admin/orders/test/<id>/history` now returns a
+private HTTP 503 when PostgreSQL raises `psycopg.OperationalError` while reading
+the default timeline, HTML timeline, or complete snapshot. The HTML page keeps
+the exact ID, links to retry its timeline and the administrator ID lookup, and
+does not claim that an order is missing or that any particular status was saved.
+The two JSON views return a short error, ID, and same-ID retry guidance without
+database diagnostics. Successful payloads, truly missing-order 404 responses,
+authentication, the default-off gate, and private response headers remain as
+before. The recovery path does not create a CSRF token or submit a transition.
+
+The disposable-PostgreSQL verifier injects a connection failure before and
+after a successful read for all three views. It checks private headers, escaped
+HTML, successful re-read, missing-order 404s, and exact rows in all five
+synthetic order, item, state, event, and notice tables before and after each
+request. This is a database-only synthetic rehearsal; it does not contact a
+carrier, payment provider, or Slack. Exact-head CI is required before promotion.
+
 ## Synthetic status transition database recovery
 
 An administrator's valid synthetic status transition POST now returns HTTP 503
