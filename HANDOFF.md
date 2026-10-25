@@ -1,5 +1,23 @@
 # Handoff
 
+## Isolated admin mobile browser rehearsal
+
+`verify_admin_browser.py` adds a real headless Chromium check to the CI verifier.
+It serves the Flask app on loopback against a fresh PostgreSQL schema in the
+dedicated verification database, with only synthetic admin settings and blocked
+external HTTP requests. A 320 px mobile viewport uses keyboard controls to
+select fictional quantities, review them before any write, confirm the record,
+open the receipt, and advance all three simulated status steps. It also checks
+the browser-rendered document width, Korean page headings, and missing-ID
+recovery pages. The schema is removed after the run and the browser result is
+uploaded alongside the integration result. This establishes browser behavior
+for this narrow synthetic path only; it is not a screen-reader assessment,
+provider connectivity check, real purchase, Slack send, or live deployment test.
+
+Run `VERIFY_DATABASE_URL=postgresql://.../ourisul_verify python verify_admin_browser.py`
+after installing `requirements.txt`, `playwright==1.56.0`, and its Chromium
+browser. Exact-head CI results must be reviewed before promotion.
+
 ## Admin rehearsal narrow-screen markup
 
 The synthetic order ID lookup now explains the exact ID format in visible text
