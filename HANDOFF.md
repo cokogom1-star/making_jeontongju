@@ -1,5 +1,25 @@
 # Handoff
 
+## Admin rehearsal narrow-screen markup
+
+The synthetic order ID lookup now explains the exact ID format in visible text
+and associates that help with its input. Both fictional quantity forms now show
+the 0–10 whole-number and at-least-one-item rule and associate it with their
+inputs. The shared admin rehearsal style wraps
+long IDs in paragraphs and list items, including timeline IDs, recovery IDs,
+receipt IDs, and fictional item IDs, so these tokens can break on narrow screens.
+The disposable-PostgreSQL verifier parses rendered creation, timeline, and
+rehearsal HTML to check both help associations, Korean document language,
+viewport, main heading, private headers, and the shared wrapping rule.
+
+This is a markup contract, not a browser layout or screen-reader result. An
+isolated browser/mobile pass still needs a reachable disposable app plus
+PostgreSQL: use only synthetic IDs and fixtures; verify the 320 px layout has
+no horizontal page overflow, keyboard access through selection, review,
+confirmation, receipt and three simulated status steps, and readable recovery
+pages. Do not use the production database, real orders, provider calls, or
+the synthetic Slack sender for that pass.
+
 ## Synthetic history read database recovery
 
 The administrator-only `GET /admin/orders/test/<id>/history` now returns a
