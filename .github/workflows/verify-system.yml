@@ -9,7 +9,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -33,12 +33,23 @@ jobs:
         env:
           VERIFY_DATABASE_URL: postgresql://verify:verify_ephemeral@127.0.0.1:5432/ourisul_verify
         run: python verify_system.py
+      - name: Install Chromium browser verifier
+        run: |
+          pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Verify mobile admin rehearsal in Chromium
+        env:
+          VERIFY_DATABASE_URL: postgresql://verify:verify_ephemeral@127.0.0.1:5432/ourisul_verify
+          VERIFIED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python verify_admin_browser.py
       - name: Save verification evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: ourisul-verification
-          path: verification-result.json
+          path: |
+            verification-result.json
+            browser-verification-result.json
           if-no-files-found: error
   promotion-ready:
     needs: verify
