@@ -7,6 +7,7 @@ Cafe24/Toss/Slack are synthetic adapters: this does NOT certify provider E2E.
 No production DB fallback. Every run creates and drops its own random schema.
 """
 import io
+from html.parser import HTMLParser
 from itertools import product
 import json
 import os
@@ -1145,6 +1146,67 @@ def main():
                         self.assertEqual(conn.execute('SELECT count(*) FROM ourisul_test_order_event').fetchone()[0], 4)
                         self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_order_notice
                             WHERE source='synthetic' AND order_id=%s''', (order_id,)).fetchone()[0], 1)
+
+                def test_admin_rehearsal_markup_has_lookup_help_and_narrow_text_wrap(self):
+                    class Tags(HTMLParser):
+                        def __init__(self):
+                            super().__init__()
+                            self.found = []
+                            self.words = []
+
+                        def handle_starttag(self, tag, attrs):
+                            self.found.append((tag, dict(attrs)))
+
+                        def handle_data(self, data):
+                            self.words.append(data)
+
+                    def inspect(page):
+                        self.assertEqual(page.status_code, 200)
+                        html = page.get_data(as_text=True)
+                        parsed = Tags()
+                        parsed.feed(html)
+                        self.assertIn(('html', {'lang': 'ko'}), parsed.found)
+                        self.assertTrue(any(tag == 'meta' and attrs.get('name') == 'viewport'
+                                            for tag, attrs in parsed.found))
+                        self.assertEqual(sum(tag == 'main' for tag, _ in parsed.found), 1)
+                        self.assertEqual(sum(tag == 'h1' for tag, _ in parsed.found), 1)
+                        # Long TEST IDs and fixture IDs are visible in paragraphs and list items.
+                        self.assertIn('p,li{overflow-wrap:anywhere}', html)
+                        self.assertEqual(page.headers['Cache-Control'], 'no-store')
+                        self.assertEqual(page.headers['Referrer-Policy'], 'no-referrer')
+                        return parsed
+
+                    form = inspect(self.get('/admin/orders/test?view=html'))
+                    elements = form.found
+                    lookup = next(attrs for tag, attrs in elements
+                                  if tag == 'input' and attrs.get('id') == 'order_id')
+                    self.assertEqual(lookup['aria-describedby'], 'order-id-help')
+                    self.assertTrue(any(tag == 'label' and attrs.get('for') == 'order_id'
+                                        for tag, attrs in elements))
+                    self.assertTrue(any(tag == 'p' and attrs.get('id') == lookup['aria-describedby']
+                                        for tag, attrs in elements))
+                    self.assertIn('37자 ID를 입력하세요', ''.join(form.words))
+                    self.assertEqual(lookup['pattern'], 'TEST-[0-9a-f]{32}')
+
+                    def quantity_help(parsed):
+                        self.assertTrue(any(tag == 'p' and attrs.get('id') == 'quantity-help'
+                                            for tag, attrs in parsed.found))
+                        self.assertIn('적어도 한 품목은 1개 이상 선택하세요', ''.join(parsed.words))
+                        inputs = [attrs for tag, attrs in parsed.found
+                                  if tag == 'input' and attrs.get('type') == 'number']
+                        self.assertEqual({attrs['name'] for attrs in inputs},
+                                         {'SYNTHETIC-CHEONGJU', 'SYNTHETIC-TAKJU'})
+                        for attrs in inputs:
+                            self.assertEqual((attrs['min'], attrs['max'], attrs['step'],
+                                              attrs['aria-describedby']), ('0', '10', '1', 'quantity-help'))
+
+                    quantity_help(form)
+
+                    with self.client.session_transaction() as sess:
+                        order_id = sess['test_order_id']
+                    self.assertTrue(test_orders.record_test_order(order_id))
+                    inspect(self.get(f'/admin/orders/test/{order_id}/history?view=html'))
+                    quantity_help(inspect(self.get('/admin/orders/test/rehearsal')))
 
                 def test_synthetic_tracking_html_admin_flow_is_read_only(self):
                     form_path = '/admin/orders/test?view=html'

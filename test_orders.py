@@ -27,6 +27,7 @@ font:16px/1.6 system-ui,sans-serif;color:#24221e;background:#f6f2e9}
 h1{font-size:clamp(1.5rem,5vw,2.2rem)}form{display:grid;gap:12px;margin:24px 0}
 input,button{font:inherit;padding:10px;max-width:100%}button{cursor:pointer}
 ol{padding-left:24px}li{padding:8px 0;border-bottom:1px solid #d8d1c4}
+p,li{overflow-wrap:anywhere}
 a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid #7b421f;outline-offset:3px}
 small{display:block;color:#625b51}input{width:100%}
 dl{margin:8px 0 20px}dt{font-weight:600}dd{margin:0 0 8px;overflow-wrap:anywhere}
@@ -49,7 +50,8 @@ TRACKING_FORM = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 </section>
 <form method="get" action="{{url_for('test_orders.lookup_test_order')}}">
 <label for="order_id">합성 주문 ID</label>
-<input id="order_id" name="order_id" required autocomplete="off"
+<p id="order-id-help">TEST-로 시작하는 37자 ID를 입력하세요. 하이픈 뒤에는 영문 소문자 a–f와 숫자 32자가 옵니다.</p>
+<input id="order_id" name="order_id" required autocomplete="off" aria-describedby="order-id-help"
 pattern="TEST-[0-9a-f]{32}" placeholder="TEST-…">
 <button type="submit">상태 조회</button></form>
 <form method="post" action="{{url_for('test_orders.create_test_order', view='html')}}">
@@ -63,8 +65,9 @@ pattern="TEST-[0-9a-f]{32}" placeholder="TEST-…">
 <input type="hidden" name="csrf" value="{{csrf}}">
 <input type="hidden" name="order_id" value="{{scenario_order_id}}">
 <input type="hidden" name="scenario" value="fixed-v1">
-<label>가상 청주 <input type="number" name="SYNTHETIC-CHEONGJU" min="0" max="10" step="1" value="1" required></label>
-<label>가상 탁주 <input type="number" name="SYNTHETIC-TAKJU" min="0" max="10" step="1" value="0" required></label>
+<p id="quantity-help">각 품목은 0~10개의 정수로 입력하고, 적어도 한 품목은 1개 이상 선택하세요.</p>
+<label>가상 청주 <input type="number" name="SYNTHETIC-CHEONGJU" min="0" max="10" step="1" value="1" required aria-describedby="quantity-help"></label>
+<label>가상 탁주 <input type="number" name="SYNTHETIC-TAKJU" min="0" max="10" step="1" value="0" required aria-describedby="quantity-help"></label>
 <button type="submit">가상 수량 기록하고 추적하기</button></form></section>
 </main></body></html>''')
 
@@ -195,8 +198,9 @@ REHEARSAL_FORM = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <input type="hidden" name="csrf" value="{{csrf}}">
 <input type="hidden" name="order_id" value="{{order_id}}">
 <input type="hidden" name="scenario" value="fixed-v1">
-<label>가상 청주 <input type="number" name="SYNTHETIC-CHEONGJU" min="0" max="10" step="1" value="1" required></label>
-<label>가상 탁주 <input type="number" name="SYNTHETIC-TAKJU" min="0" max="10" step="1" value="0" required></label>
+<p id="quantity-help">각 품목은 0~10개의 정수로 입력하고, 적어도 한 품목은 1개 이상 선택하세요.</p>
+<label>가상 청주 <input type="number" name="SYNTHETIC-CHEONGJU" min="0" max="10" step="1" value="1" required aria-describedby="quantity-help"></label>
+<label>가상 탁주 <input type="number" name="SYNTHETIC-TAKJU" min="0" max="10" step="1" value="0" required aria-describedby="quantity-help"></label>
 <button type="submit">선택한 수량 확인</button></form>
 <p><a href="{{url_for('test_orders.create_test_order', view='html')}}">관리자 합성 주문 조회</a></p>
 </main></body></html>''')
