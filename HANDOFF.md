@@ -1,5 +1,21 @@
 # Handoff
 
+## Browser rehearsal for synthetic Slack outbox retries
+
+The 320 px Chromium verifier now follows a saved fictional basket receipt to
+its timeline and snapshot, then exercises the real exact-ID synthetic sender
+against an injected mock HTTP transport. A simulated timeout leaves the notice
+deferred after one claim. An immediate retry makes no HTTP call or database
+change. The verifier advances only that notice's retry timestamp in its
+disposable PostgreSQL schema; a second attempt records delivery, and another
+send attempt leaves all five synthetic ledgers unchanged. Both mock calls must
+contain only the selected test ID, use the separate test webhook and fixed
+timeouts, and never reach external HTTP. Chromium checks the ready, deferred,
+and delivered labels, attempt counts, exact displayed timestamps, snapshot
+states, and receipt/timeline warnings that outbox delivery does not prove
+Slack receipt or actual shipping. This does not contact Slack or prove
+exactly-once delivery. Exact-head CI must pass before promotion.
+
 ## Browser rehearsal for ambiguous database failures
 
 The administrator's synthetic confirmation recovery page now offers a
