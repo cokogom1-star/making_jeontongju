@@ -12,6 +12,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlparse
 
@@ -153,6 +154,8 @@ def main():
                 check(page, '가상 기록 확인')
                 assert order_id in page.locator('main').inner_text()
                 assert page.url.endswith('/receipt')
+                receipt_url = page.url
+                assert '실제 Slack 수신이나 배송을 뜻하지 않습니다' in page.locator('main').inner_text()
                 with cafe24.database() as conn:
                     assert conn.execute('SELECT order_id FROM ourisul_test_orders').fetchall() == [(order_id,)]
                     assert conn.execute('SELECT item_id, quantity FROM ourisul_test_order_item '
@@ -165,6 +168,86 @@ def main():
                     assert conn.execute('SELECT source, status, delivered_at, attempts '
                                         'FROM ourisul_order_notice WHERE order_id = %s',
                                         (order_id,)).fetchall() == [('synthetic', 'TEST_CREATED', None, 0)]
+                # The browser reads the same exact outbox row that the real synthetic
+                # sender claims. Only its HTTP transport is replaced with a fake.
+                timeline_url = base + f'/admin/orders/test/{order_id}/history?view=html'
+                snapshot_url = base + f'/admin/orders/test/{order_id}/history?view=snapshot'
+                webhook = 'https://hooks.slack.com/services/VERIFY/VERIFY/SYNTHETIC'
+                posts = []
+
+                def fake_post(url, **kwargs):
+                    posts.append((url, kwargs))
+                    if len(posts) == 1:
+                        raise requests.Timeout('synthetic verifier timeout')
+                    return SimpleNamespace(status_code=200, text='ok')
+
+                notice_labels = {'ready': '발송 대기', 'deferred': '재시도 대기',
+                                 'delivered': '전송 기록 완료'}
+
+                def notice_view(state, attempts, time_key=None, time_label=None):
+                    private_ok(page.goto(timeline_url))
+                    check(page, '합성 주문 배송 상태')
+                    assert f'{state} ({notice_labels[state]})' in page.locator('dl').inner_text()
+                    assert f'{attempts}회' in page.locator('dl').inner_text()
+                    assert '실제 Slack 수신을 보장하지 않습니다' in page.locator('main').inner_text()
+                    snapshot_response = page.goto(snapshot_url)
+                    private_ok(snapshot_response)
+                    notice = snapshot_response.json()['notice']
+                    assert (notice['state'], notice['attempts']) == (state, attempts)
+                    private_ok(page.goto(timeline_url))
+                    if time_key:
+                        rendered_time = page.locator('dt', has_text=time_label).locator(
+                            'xpath=following-sibling::dd[1]/time')
+                        assert rendered_time.count() == 1
+                        assert rendered_time.get_attribute('datetime') == notice[time_key]
+                    return notice
+
+                ready_rows = saved_rows(cafe24.database)
+                notice_view('ready', 0)
+                assert saved_rows(cafe24.database) == ready_rows
+                with patch.dict(os.environ, {
+                        'SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED': 'true',
+                        'SLACK_TEST_ORDER_WEBHOOK_URL': webhook,
+                        'SLACK_ORDER_WEBHOOK_URL':
+                            'https://hooks.slack.com/services/VERIFY/VERIFY/REAL'}):
+                    assert notices.deliver_synthetic_pending(cafe24.database, order_id,
+                                                             post=fake_post) == {
+                                                                 'delivered': 0, 'failed': 1}
+                    deferred = notice_view('deferred', 1, 'retry_at', '재시도 예정 시각')
+                    assert deferred['retry_at']
+                    deferred_rows = saved_rows(cafe24.database)
+                    assert notices.deliver_synthetic_pending(cafe24.database, order_id,
+                                                             post=fake_post) == {
+                                                                 'delivered': 0, 'failed': 0}
+                    assert len(posts) == 1
+                    assert saved_rows(cafe24.database) == deferred_rows
+                    with cafe24.database() as conn:
+                        conn.execute('''UPDATE ourisul_order_notice
+                            SET next_attempt_at = now() - interval '1 second'
+                            WHERE source = 'synthetic' AND order_id = %s''', (order_id,))
+                    assert notices.deliver_synthetic_pending(cafe24.database, order_id,
+                                                             post=fake_post) == {
+                                                                 'delivered': 1, 'failed': 0}
+                    delivered = notice_view('delivered', 2, 'delivered_at', '전송 기록 시각')
+                    assert delivered['delivered_at']
+                    delivered_rows = saved_rows(cafe24.database)
+                    for table in ready_rows:
+                        if table != 'ourisul_order_notice':
+                            assert delivered_rows[table] == ready_rows[table], table
+                    assert notices.deliver_synthetic_pending(cafe24.database, order_id,
+                                                             post=fake_post) == {
+                                                                 'delivered': 0, 'failed': 0}
+                    assert len(posts) == 2
+                    assert saved_rows(cafe24.database) == delivered_rows
+                for url, kwargs in posts:
+                    assert url == webhook
+                    assert kwargs == {'json': {'text': f'[테스트·미운영] {order_id}'},
+                                      'timeout': (5, 15), 'allow_redirects': False}
+                private_ok(page.goto(receipt_url))
+                check(page, '가상 기록 확인')
+                assert 'delivered (전송 기록 완료)' in page.locator('main').inner_text()
+                assert '실제 Slack 수신이나 배송을 뜻하지 않습니다' in page.locator('main').inner_text()
+                assert saved_rows(cafe24.database) == delivered_rows
                 page.keyboard.press('Tab')
                 assert page.get_by_role('link', name='합성 배송 상태 보기').evaluate(
                     '(el) => document.activeElement === el')
@@ -293,6 +376,7 @@ def main():
             report['passed'] = True
             report['checks'] = ['keyboard rehearsal and three transitions',
                                 '320px document width on each page', 'lookup and receipt recovery',
+                                'receipt-to-mock-sender failure, defer, retry and recorded delivery',
                                 'pre-write and post-commit failure retry with five-ledger idempotency']
     except Exception as exc:
         report['error'] = type(exc).__name__ + ': ' + str(exc)
