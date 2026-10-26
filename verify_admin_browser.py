@@ -2,7 +2,8 @@
 """Chromium rehearsal against a local Flask server and disposable PostgreSQL schema.
 
 Run only with VERIFY_DATABASE_URL pointing at a dedicated verify/test database.
-No production credentials, provider calls, or synthetic Slack sender are used.
+No production credentials, provider calls, or real Slack requests are used.
+The synthetic sender runs only with an injected mock HTTP transport.
 """
 import json
 import os
