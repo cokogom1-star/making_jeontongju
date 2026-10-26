@@ -1,5 +1,23 @@
 # Handoff
 
+## Browser rehearsal for ambiguous database failures
+
+The administrator's synthetic confirmation recovery page now offers a
+same-ID, same-CSRF retry form when the reviewed draft remains in that browser
+session. Its read-only timeline link comes first, because a connection error
+may occur after commit and the recovery page cannot tell whether the record
+was saved. Other recovery pages do not gain a retry form.
+
+`verify_admin_browser.py` exercises a pre-write failure and a post-commit
+ambiguous failure through Chromium at 320 px. It checks the rendered recovery,
+original retry fields and keyboard control, then compares all five synthetic
+tables before and after the failure and retry. The post-commit retry must leave
+every row unchanged; both cases finish with exactly one fictional order,
+basket, initial state, event and outbox record. Failure injection exists only
+inside the disposable verifier process; no provider or production data is used.
+The existing happy path remains one separate browser scenario. Exact-head CI
+is needed to establish the browser result before promotion.
+
 ## Isolated admin mobile browser rehearsal
 
 `verify_admin_browser.py` adds a real headless Chromium check to the CI verifier.
