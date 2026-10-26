@@ -29,6 +29,16 @@ def private_ok(response):
     assert response.headers.get('referrer-policy') == 'no-referrer', response.url
 
 
+def saved_rows(database):
+    """Capture all five synthetic ledgers, including rows from earlier browser steps."""
+    tables = ('ourisul_test_orders', 'ourisul_test_order_item',
+              'ourisul_test_order_state', 'ourisul_test_order_event',
+              'ourisul_order_notice')
+    with database() as conn:
+        return {table: conn.execute(f'SELECT * FROM {table} ORDER BY 1, 2').fetchall()
+                for table in tables}
+
+
 def main():
     report = {'started_at': datetime.now(timezone.utc).isoformat(),
               'commit_sha': os.environ.get('GITHUB_SHA', 'unknown'),
@@ -51,6 +61,7 @@ def main():
         from playwright.sync_api import sync_playwright
         from werkzeug.serving import make_server
         import requests
+        from psycopg import OperationalError
 
         info = conninfo_to_dict(dsn)
         if not any(part in info.get('dbname', '').lower() for part in ('verify', 'test')):
@@ -185,6 +196,82 @@ def main():
                                             (0, 'TEST_CREATED'), (1, 'TEST_PREPARED'),
                                             (2, 'TEST_SHIPPED'), (3, 'TEST_DELIVERED')]
 
+                # Exercise both connection-loss timings through the real browser POST.
+                # The patch is scoped to that navigation and never changes the database.
+                for failure in ('before_write', 'after_commit'):
+                    response = page.goto(base + '/admin/orders/test/rehearsal')
+                    private_ok(response)
+                    check(page, '가상 주문 연습')
+                    retry_id = page.locator('input[name="order_id"]').input_value()
+                    page.locator('input[name="SYNTHETIC-CHEONGJU"]').fill('2')
+                    page.locator('input[name="SYNTHETIC-TAKJU"]').fill('1')
+                    with page.expect_navigation() as navigation:
+                        page.get_by_role('button', name='선택한 수량 확인').click()
+                    private_ok(navigation.value)
+                    check(page, '가상 수량 확인')
+                    assert retry_id == page.locator('input[name="order_id"]').input_value()
+                    review_csrf = page.locator('input[name="csrf"]').input_value()
+                    assert '가상 청주 · 2개' in page.locator('main').inner_text()
+                    assert '가상 탁주 · 1개' in page.locator('main').inner_text()
+                    before = saved_rows(cafe24.database)
+                    original_record = test_orders.record_test_order
+
+                    def disconnected(*args, **kwargs):
+                        if failure == 'after_commit':
+                            original_record(*args, **kwargs)
+                        raise OperationalError('injected browser rehearsal failure')
+
+                    with patch.object(test_orders, 'record_test_order', side_effect=disconnected):
+                        with page.expect_navigation() as navigation:
+                            page.get_by_role('button', name='이 가상 수량 기록').click()
+                        failed = navigation.value
+                    assert failed.status == 503, failed.url
+                    assert failed.headers.get('cache-control') == 'no-store'
+                    assert failed.headers.get('referrer-policy') == 'no-referrer'
+                    check(page, '가상 기록을 지금 확인할 수 없습니다')
+                    assert retry_id in page.locator('main').inner_text()
+                    assert page.get_by_role('link', name='이 ID의 저장 기록 확인하기').get_attribute(
+                        'href') == f'/admin/orders/test/{retry_id}/history?view=html'
+                    after_failure = saved_rows(cafe24.database)
+                    if failure == 'before_write':
+                        assert after_failure == before, 'Failed pre-write request changed a ledger'
+                    else:
+                        assert after_failure != before, 'Ambiguous post-commit request did not persist'
+
+                    # The recovery form replays the original reviewed request exactly.
+                    assert retry_id == page.locator('form input[name="order_id"]').input_value()
+                    assert review_csrf == page.locator('form input[name="csrf"]').input_value()
+                    page.get_by_role('link', name='이 ID의 저장 기록 확인하기').focus()
+                    page.keyboard.press('Tab')
+                    assert page.get_by_role('button', name='같은 가상 기록 요청 다시 시도').evaluate(
+                        '(el) => document.activeElement === el')
+                    with page.expect_navigation() as navigation:
+                        page.keyboard.press('Enter')
+                    private_ok(navigation.value)
+                    check(page, '가상 기록 확인')
+                    assert retry_id in page.locator('main').inner_text()
+                    assert '가상 청주 · 2개' in page.locator('main').inner_text()
+                    assert '가상 탁주 · 1개' in page.locator('main').inner_text()
+                    after_retry = saved_rows(cafe24.database)
+                    if failure == 'after_commit':
+                        assert after_retry == after_failure, 'Exact-ID retry duplicated a ledger row'
+                    with cafe24.database() as conn:
+                        assert conn.execute('SELECT count(*) FROM ourisul_test_orders WHERE order_id = %s',
+                                            (retry_id,)).fetchone()[0] == 1
+                        assert conn.execute('SELECT item_id, quantity FROM ourisul_test_order_item '
+                                            'WHERE order_id = %s ORDER BY item_id', (retry_id,)).fetchall() == [
+                                                ('SYNTHETIC-CHEONGJU', 2), ('SYNTHETIC-TAKJU', 1)]
+                        assert conn.execute('SELECT status, version FROM ourisul_test_order_state '
+                                            'WHERE order_id = %s', (retry_id,)).fetchall() == [
+                                                ('TEST_CREATED', 0)]
+                        assert conn.execute('SELECT to_status FROM ourisul_test_order_event '
+                                            'WHERE order_id = %s', (retry_id,)).fetchall() == [
+                                                ('TEST_CREATED',)]
+                        assert conn.execute('SELECT source, status, delivered_at, attempts '
+                                            'FROM ourisul_order_notice WHERE order_id = %s',
+                                            (retry_id,)).fetchall() == [
+                                                ('synthetic', 'TEST_CREATED', None, 0)]
+
                 # Browser-rendered recovery pages, including a long ID and lookup retry.
                 response = page.goto(base + '/admin/orders/test/lookup?order_id=invalid')
                 assert response.status == 404
@@ -205,7 +292,8 @@ def main():
                 browser.close()
             report['passed'] = True
             report['checks'] = ['keyboard rehearsal and three transitions',
-                                '320px document width on each page', 'lookup and receipt recovery']
+                                '320px document width on each page', 'lookup and receipt recovery',
+                                'pre-write and post-commit failure retry with five-ledger idempotency']
     except Exception as exc:
         report['error'] = type(exc).__name__ + ': ' + str(exc)
         traceback.print_exc()

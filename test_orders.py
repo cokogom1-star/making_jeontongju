@@ -241,6 +241,10 @@ REHEARSAL_RECOVERY = ('''<!doctype html><html lang="ko"><head><meta charset="utf
 <p>기록 버튼을 눌렀다면 저장 여부를 이 화면만으로 판단하지 마세요. 합성 주문 ID로 관리자 조회 화면에서 확인할 수 있습니다.</p>
 {% if order_id %}<p>합성 주문 ID: <strong>{{order_id}}</strong></p>{% endif %}
 {% if order_id %}<p><a href="{{url_for('test_orders.test_order_history', order_id=order_id, view='html')}}">이 ID의 저장 기록 확인하기</a></p>{% endif %}
+{% if retry_csrf %}<form method="post" action="{{url_for('test_orders.confirm_rehearsal')}}">
+<input type="hidden" name="csrf" value="{{retry_csrf}}">
+<input type="hidden" name="order_id" value="{{order_id}}">
+<button type="submit">같은 가상 기록 요청 다시 시도</button></form>{% endif %}
 <p><a href="{{url_for('test_orders.start_rehearsal')}}">새 가상 주문 연습 시작하기</a></p>
 <p><a href="{{url_for('test_orders.create_test_order', view='html')}}">합성 주문 ID 조회하기</a></p>
 </main></body></html>''')
@@ -260,10 +264,13 @@ REHEARSAL_ERRORS = {
 
 def rehearsal_error(status, order_id=None):
     title, guidance = REHEARSAL_ERRORS[status]
+    retry_csrf = None
     if order_id is not None and status == 503:
         guidance = '기록 요청 중 저장소 연결 오류가 발생했습니다. 저장 여부를 ID 조회로 확인한 뒤 같은 요청을 다시 시도해 주세요.'
+        if rehearsal_drafts().get(order_id) is not None:
+            retry_csrf = session.get('test_order_csrf')
     return render_template_string(REHEARSAL_RECOVERY, title=title, guidance=guidance,
-                                  order_id=order_id), status
+                                  order_id=order_id, retry_csrf=retry_csrf), status
 
 NEXT_LABELS = {'TEST_PREPARED': '합성 준비 완료', 'TEST_SHIPPED': '합성 발송 처리',
                'TEST_DELIVERED': '합성 배송 완료'}
