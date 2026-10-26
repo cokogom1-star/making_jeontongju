@@ -197,7 +197,7 @@ def main():
                                             (2, 'TEST_SHIPPED'), (3, 'TEST_DELIVERED')]
 
                 # Exercise both connection-loss timings through the real browser POST.
-                # The patch is scoped to that navigation and never changes the database.
+                # After-commit mode writes only to this disposable schema.
                 for failure in ('before_write', 'after_commit'):
                     response = page.goto(base + '/admin/orders/test/rehearsal')
                     private_ok(response)
