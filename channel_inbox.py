@@ -7,6 +7,7 @@ import json
 import re
 
 from flask import Blueprint, render_template_string, request, url_for
+from psycopg import OperationalError
 from psycopg.errors import UndefinedTable
 
 from cafe24 import database, protected
@@ -44,6 +45,15 @@ border-bottom:1px solid #c9c0b1;overflow-wrap:anywhere}a{color:inherit}
 </tbody></table></div>{% else %}<p>저장된 채널 주문 기록이 없습니다.</p>{% endif %}
 {% if next_cursor %}<p><a href="{{url_for('channel_inbox.inbox', cursor=next_cursor)}}">이전 기록 보기 →</a></p>{% endif %}
 {% if cursor_used %}<p><a href="{{url_for('channel_inbox.inbox')}}">처음 기록으로 돌아가기</a></p>{% endif %}
+</main></body></html>'''
+
+DB_RECOVERY = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>채널 주문 기록을 불러올 수 없음 | 우리술</title>
+</head><body><main><h1>채널 주문 기록을 불러올 수 없습니다</h1>
+<p>저장소 연결에 문제가 있어 기록을 확인하지 못했습니다. 주문 기록이 없다는 뜻은 아닙니다.</p>
+<p><a href="{{retry_url}}">이 페이지 다시 시도</a></p>
+<p><a href="{{url_for('channel_inbox.inbox')}}">처음 기록으로 돌아가기</a></p>
 </main></body></html>'''
 
 
@@ -140,6 +150,11 @@ def inbox():
     except ChannelInboxUnavailable:
         return '주문 기록을 불러올 수 없습니다.', 503, {
             'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}
+    except OperationalError:
+        return render_template_string(
+            DB_RECOVERY,
+            retry_url=url_for('channel_inbox.inbox', **({'cursor': values[0]} if values else {}))
+        ), 503, {'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}
     response = render_template_string(PAGE, rows=rows, next_cursor=next_cursor,
                                       cursor_used=bool(values), history_size=HISTORY_SIZE)
     return response, 200, {'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}
