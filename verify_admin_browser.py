@@ -10,7 +10,8 @@ import os
 import secrets
 import sys
 import traceback
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
@@ -91,6 +92,7 @@ def main():
             import order_notifications as notices
             import synthetic_order_history as fulfillment
             import test_orders
+            import channel_inbox
             from app import app
 
             # The loopback HTTP server has no TLS. Only this process relaxes the cookie flag.
@@ -370,6 +372,113 @@ def main():
                 response = page.goto(base + '/admin/orders/test/rehearsal/' + 'TEST-' + 'f' * 32 + '/receipt')
                 assert response.status == 404
                 check(page, '가상 기록을 확인할 수 없습니다')
+
+                # Saved channel records are fictional and live only in this
+                # disposable schema. Browser reads must never change them.
+                inbox_path = '/admin/orders/channels'
+                with cafe24.database() as conn:
+                    notices.channel_schema(conn)
+                    for i in range(27):
+                        conn.execute('''INSERT INTO ourisul_order_notice
+                            (source, order_id, status, ordered_at, item_count, created_at)
+                            VALUES (%s, %s, 'FIRST', '2026-10-01T00:00:00Z', 0, %s)''',
+                            ('cafe24' if i % 2 else 'coupang', f'BROWSER-{i:02}',
+                             datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(seconds=i)))
+                    conn.execute('''INSERT INTO ourisul_order_notice
+                        (source, order_id, status, ordered_at, item_count)
+                        VALUES ('synthetic', 'TEST-browser-inbox', 'TEST', '2026-10-01', 0)''')
+                notices.record_orders('cafe24', [{'order_id': 'BROWSER-25', 'status': 'PACKED',
+                    'ordered_at': '2026-10-01T00:00:00Z', 'item_count': 0}], cafe24.database)
+
+                def channel_rows():
+                    with cafe24.database() as conn:
+                        return tuple(conn.execute('SELECT * FROM ' + table + ' ORDER BY ' + order).fetchall()
+                                     for table, order in (
+                                         ('ourisul_order_notice', 'source, order_id'),
+                                         ('ourisul_channel_order_state', 'source, order_id'),
+                                         ('ourisul_channel_order_event', 'id')))
+
+                inbox_before = channel_rows()
+                private_ok(page.goto(base + inbox_path))
+                check(page, '채널 주문 기록')
+                assert page.locator('tbody tr').count() == 25
+                assert 'PACKED' in page.locator('main').inner_text()
+                assert 'TEST-browser-inbox' not in page.locator('main').inner_text()
+                first_ids = page.locator('tbody tr td:nth-child(2)').all_inner_texts()
+                next_link = page.get_by_role('link', name='이전 기록 보기 →')
+                next_href = next_link.get_attribute('href')
+                assert next_href.startswith(inbox_path + '?cursor=')
+                scroll_region = page.get_by_role('region', name='저장된 주문 요약')
+                assert scroll_region.evaluate('(el) => el.scrollWidth > el.clientWidth')
+                page.keyboard.press('Tab')
+                assert scroll_region.evaluate('(el) => document.activeElement === el')
+                page.keyboard.press('Tab')
+                assert next_link.evaluate('(el) => document.activeElement === el')
+                with page.expect_navigation() as navigation:
+                    page.keyboard.press('Enter')
+                private_ok(navigation.value)
+                check(page, '채널 주문 기록')
+                assert page.locator('tbody tr').count() == 2
+                second_ids = page.locator('tbody tr td:nth-child(2)').all_inner_texts()
+                assert len(set(first_ids + second_ids)) == 27
+                assert set(first_ids + second_ids) == {f'BROWSER-{i:02}' for i in range(27)}
+                assert page.get_by_role('link', name='이전 기록 보기 →').count() == 0
+                first_link = page.get_by_role('link', name='처음 기록으로 돌아가기')
+                assert first_link.get_attribute('href') == inbox_path
+                scroll_region = page.get_by_role('region', name='저장된 주문 요약')
+                assert scroll_region.evaluate('(el) => el.scrollWidth > el.clientWidth')
+                page.keyboard.press('Tab')
+                assert scroll_region.evaluate('(el) => document.activeElement === el')
+                page.keyboard.press('Tab')
+                assert first_link.evaluate('(el) => document.activeElement === el')
+                with page.expect_navigation() as navigation:
+                    page.keyboard.press('Enter')
+                private_ok(navigation.value)
+                check(page, '채널 주문 기록')
+                assert page.locator('tbody tr td:nth-child(2)').all_inner_texts() == first_ids
+                assert channel_rows() == inbox_before
+
+                @contextmanager
+                def failing_connect():
+                    raise OperationalError('private browser database diagnostic')
+                    yield
+
+                @contextmanager
+                def failing_read():
+                    with cafe24.database() as conn:
+                        class ConnectionProxy:
+                            def execute(self, query, params=None):
+                                if 'WITH page AS' in query:
+                                    raise OperationalError('private browser database diagnostic')
+                                return conn.execute(query, params)
+                        yield ConnectionProxy()
+
+                original_saved_orders = channel_inbox.saved_orders
+                for path in (inbox_path, next_href):
+                    for failed_connect in (failing_connect, failing_read):
+                        with patch.object(channel_inbox, 'saved_orders',
+                                          side_effect=lambda selected: original_saved_orders(
+                                              selected, connect=failed_connect)):
+                            failed = page.goto(base + path)
+                        assert failed.status == 503, failed.url
+                        assert failed.headers.get('cache-control') == 'no-store'
+                        assert failed.headers.get('referrer-policy') == 'no-referrer'
+                        check(page, '채널 주문 기록을 불러올 수 없습니다')
+                        content = page.locator('main').inner_text()
+                        assert '주문 기록이 없다는 뜻은 아닙니다' in content
+                        assert 'private browser database diagnostic' not in page.content()
+                        assert '저장된 채널 주문 기록이 없습니다' not in content
+                        retry = page.get_by_role('link', name='이 페이지 다시 시도')
+                        assert retry.get_attribute('href') == path
+                        page.keyboard.press('Tab')
+                        assert retry.evaluate('(el) => document.activeElement === el')
+                        with page.expect_navigation() as navigation:
+                            page.keyboard.press('Enter')
+                        private_ok(navigation.value)
+                        check(page, '채널 주문 기록')
+                        assert page.locator('tbody tr').count() == (25 if path == inbox_path else 2)
+                        assert channel_rows() == inbox_before
+
                 assert not blocked_urls, 'Browser requested an external URL: ' + repr(blocked_urls)
                 assert outbound_request.call_count == 0, 'Application attempted external HTTP'
                 context.close()
@@ -378,7 +487,8 @@ def main():
             report['checks'] = ['keyboard rehearsal and three transitions',
                                 '320px document width on each page', 'lookup and receipt recovery',
                                 'receipt-to-mock-sender failure, defer, retry and recorded delivery',
-                                'pre-write and post-commit failure retry with five-ledger idempotency']
+                                'pre-write and post-commit failure retry with five-ledger idempotency',
+                                'channel inbox keyboard pagination and database recovery']
     except Exception as exc:
         report['error'] = type(exc).__name__ + ': ' + str(exc)
         traceback.print_exc()
