@@ -1,5 +1,20 @@
 # Handoff
 
+## Private channel inbox database recovery
+
+The administrator channel inbox returns a private Korean HTTP 503 recovery page
+when PostgreSQL raises `psycopg.OperationalError` while connecting or reading
+saved notices and collection history. The page explains that the records could
+not be checked, preserves a validated pagination cursor in its retry link, and
+also links to the first page. It does not expose database diagnostics or claim
+there are no orders. Malformed cursors still return 400, and a missing notice
+table still returns 503. The disposable-PostgreSQL verifier injects connection
+and page-query failures for both the first and a later page, checks the retry
+links, private headers, successful reread, and unchanged notice, state, and
+event rows. External provider requests remain blocked. Exact-head CI is
+required before promotion; this is a saved-record read recovery only, and its
+recovery page has not had a separate browser/mobile rehearsal.
+
 ## Browser rehearsal for synthetic Slack outbox retries
 
 The 320 px Chromium verifier now follows a saved fictional basket receipt to

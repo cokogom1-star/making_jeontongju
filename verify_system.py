@@ -2522,6 +2522,71 @@ def main():
                     self.assertEqual(new_cafe['observed_status'], 'NEW')
                     self.assertEqual(new_cafe['events'][0]['status'], 'NEW')
 
+                def test_channel_inbox_database_recovery_keeps_cursor_and_rows(self):
+                    import channel_inbox
+                    from contextlib import contextmanager
+                    from html import unescape
+
+                    stamp = datetime(2026, 10, 1, tzinfo=timezone.utc)
+                    with cafe24.database() as conn:
+                        for i in range(26):
+                            conn.execute('''INSERT INTO ourisul_order_notice
+                                (source, order_id, status, ordered_at, item_count, created_at)
+                                VALUES ('cafe24', %s, 'FIRST', '2026-10-01', 0, %s)''',
+                                (f'RECOVERY-{i:02}', stamp))
+
+                    def saved_rows():
+                        with cafe24.database() as conn:
+                            return tuple(conn.execute('SELECT * FROM ' + table + ' ORDER BY ' + order).fetchall()
+                                         for table, order in (
+                                             ('ourisul_order_notice', 'source, order_id'),
+                                             ('ourisul_channel_order_state', 'source, order_id'),
+                                             ('ourisul_channel_order_event', 'id')))
+
+                    before = saved_rows()
+                    first = self.get('/admin/orders/channels').get_data(as_text=True)
+                    cursor = unescape(re.search(r'href="[^"]*cursor=([^"]+)"', first).group(1))
+                    original = channel_inbox.saved_orders
+
+                    @contextmanager
+                    def failing_connect():
+                        raise psycopg.OperationalError('private database diagnostic')
+                        yield
+
+                    @contextmanager
+                    def failing_read():
+                        with cafe24.database() as conn:
+                            class ConnectionProxy:
+                                def execute(self, query, params=None):
+                                    if 'WITH page AS' in query:
+                                        raise psycopg.OperationalError('private database diagnostic')
+                                    return conn.execute(query, params)
+                            yield ConnectionProxy()
+
+                    for page_cursor in (None, cursor):
+                        path = '/admin/orders/channels'
+                        if page_cursor:
+                            path += '?cursor=' + page_cursor
+                        for failure in (failing_connect, failing_read):
+                            with patch.object(channel_inbox, 'saved_orders',
+                                              side_effect=lambda selected: original(selected, connect=failure)):
+                                result = self.get(path)
+                            self.assertEqual(result.status_code, 503)
+                            self.assertEqual(result.headers['Cache-Control'], 'no-store')
+                            self.assertEqual(result.headers['Referrer-Policy'], 'no-referrer')
+                            html = result.get_data(as_text=True)
+                            self.assertIn('저장소 연결에 문제가 있어', html)
+                            self.assertNotIn('private database diagnostic', html)
+                            self.assertNotIn('저장된 채널 주문 기록이 없습니다', html)
+                            retry = re.search(r'<a href="([^"]+)">이 페이지 다시 시도</a>', html)
+                            self.assertIsNotNone(retry)
+                            self.assertEqual(unescape(retry.group(1)), path)
+                            self.assertIn('처음 기록으로 돌아가기', html)
+                            self.assertEqual(self.get(unescape(retry.group(1))).status_code, 200)
+                            self.assertEqual(saved_rows(), before)
+
+                    self.assertEqual(self.get('/admin/orders/channels?cursor=bad').status_code, 400)
+
                 def test_network_default_deny(self):
                     with self.assertRaisesRegex(AssertionError, 'Unexpected external HTTP'):
                         requests.get('https://example.invalid/')
