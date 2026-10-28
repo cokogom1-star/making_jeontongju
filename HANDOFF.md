@@ -1,5 +1,22 @@
 # Handoff
 
+## Mobile browser channel inbox rehearsal
+
+The 320 px Chromium verifier now reads 27 fictional Cafe24/Coupang notices
+from its disposable PostgreSQL schema and checks the private inbox's 25+2
+pagination, exact ID coverage, keyboard navigation to the next page and back,
+no document overflow, and unchanged notice/observation ledgers. A synthetic
+notice is excluded. After static inspection of narrow column compression,
+the seven-column table sets a 700 px minimum width inside its
+keyboard-focusable horizontal scroll region. This is a layout adjustment,
+not a measured readability finding. The verifier also
+injects connection and page-query failures on
+both pages, checks the Korean HTTP 503 recovery page, private headers,
+diagnostic suppression, and a keyboard retry to the same page and cursor.
+All browser and application HTTP remains local; no provider or Slack request
+is made. This test still requires exact-head CI with Chromium and PostgreSQL
+before promotion; no such run is asserted here.
+
 ## Private channel inbox database recovery
 
 The administrator channel inbox returns a private Korean HTTP 503 recovery page

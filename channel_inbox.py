@@ -27,7 +27,7 @@ PAGE = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="robots" content="noindex,nofollow"><title>채널 주문 기록 | 우리술</title>
 <style>body{max-width:960px;margin:0 auto;padding:24px 18px;background:#f6f2e9;
 color:#24221e;font:16px/1.6 system-ui,sans-serif}h1{line-height:1.3}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px;
+table{width:100%;min-width:700px;border-collapse:collapse}th,td{text-align:left;padding:9px;
 border-bottom:1px solid #c9c0b1;overflow-wrap:anywhere}a{color:inherit}
 .scroll{overflow-x:auto}a:focus-visible{outline:3px solid #7b421f;outline-offset:3px}
 </style></head><body><main><h1>채널 주문 기록</h1>
