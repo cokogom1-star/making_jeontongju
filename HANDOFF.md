@@ -1,5 +1,25 @@
 # Handoff
 
+## Coupang order-list response validation
+
+The scheduled Coupang adapter now accepts a by-minute order-list response only
+when its documented numeric `code` is 200 and its `nextToken` is absent or null.
+Previously, an HTTP-200 provider error with `data: []` looked like a successful
+empty window; a non-null `nextToken` silently dropped further orders. The
+by-minute [Coupang documentation](https://developers.coupang.com/en/api/shipments/po-list-query-by-minute)
+describes the response token but does not document a
+matching request parameter, so the adapter fails closed on a partial page
+instead of guessing a pagination request. The isolated verifier injects these
+responses through a mock provider, including a new order on an incomplete
+page, checks that the poller raises before any notice or observation write,
+and never calls Slack. The false-empty result could hide a missed polling
+window; the continuation case could omit orders after the first page.
+
+This change does not expand the scheduled one-hour creation window or its
+`ACCEPT`-only Coupang query. It does not reconcile later statuses, older
+orders, cancellations, or returns. Exact-head CI must pass before promotion;
+no live provider response was exercised.
+
 ## Mobile browser channel inbox rehearsal
 
 The 320 px Chromium verifier now reads 27 fictional Cafe24/Coupang notices

@@ -287,7 +287,8 @@ def main():
 
                 def test_coupang_signed_order_adapter_and_outbox(self):
                     start = datetime(2026, 9, 29, tzinfo=timezone.utc)
-                    payload = {'data': [{'orderId': 123, 'status': 'ACCEPT',
+                    payload = {'code': 200, 'nextToken': None,
+                               'data': [{'orderId': 123, 'status': 'ACCEPT',
                                         'orderedAt': '2026-09-29T09:00:00+09:00',
                                         'orderItems': [{}], 'receiver': {'name': 'PRIVATE'}}]}
                     fake_get = Mock(return_value=response(payload))
@@ -298,7 +299,33 @@ def main():
                         self.assertEqual(fake_get.call_args.kwargs['headers']['X-Requested-By'], 'VERIFY123')
                         self.assertEqual(rows, [{'order_id': 123, 'status': 'ACCEPT', 'ordered_at': '2026-09-29T09:00:00+09:00', 'item_count': 1}])
                         self.assertEqual(notices.record_orders('coupang', rows, cafe24.database), 1)
-                        fake_get.return_value = response({'data': [{}]})
+                        fake_get.return_value = response({'code': 200, 'data': [], 'nextToken': None})
+                        self.assertEqual(coupang.order_summaries(start, start + timedelta(hours=1), get=fake_get), [])
+                        for bad_payload in ({'code': 500, 'data': []},
+                                            {'code': True, 'data': []},
+                                            {'code': '200', 'data': []},
+                                            {'data': []},
+                                            {**payload, 'data': [{**payload['data'][0],
+                                                                  'orderId': 456, 'status': 'DEPARTURE'}],
+                                             'nextToken': 'another-page'},
+                                            {**payload, 'nextToken': ''}):
+                            fake_get.return_value = response(bad_payload)
+                            with self.assertRaises(ValueError):
+                                notices.poll_and_deliver(
+                                    {'coupang': lambda a, b: coupang.order_summaries(a, b, get=fake_get)},
+                                    start, start + timedelta(hours=1), cafe24.database,
+                                    webhook_url='https://hooks.slack.com/services/A/B/C',
+                                    post=Mock(side_effect=AssertionError('Unexpected Slack request')))
+                        with cafe24.database() as conn:
+                            self.assertEqual(conn.execute('''SELECT source, order_id, status
+                                FROM ourisul_order_notice WHERE source = 'coupang' ''').fetchall(),
+                                [('coupang', '123', 'ACCEPT')])
+                            self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_event
+                                WHERE source = 'coupang' ORDER BY id''').fetchall(), [('ACCEPT',)])
+                            self.assertEqual(conn.execute('''SELECT order_id, status
+                                FROM ourisul_channel_order_state WHERE source = 'coupang' ''').fetchall(),
+                                [('123', 'ACCEPT')])
+                        fake_get.return_value = response({'code': 200, 'data': [{}]})
                         with self.assertRaises(ValueError):
                             coupang.order_summaries(start, start + timedelta(hours=1), get=fake_get)
                         before = fake_get.call_count
