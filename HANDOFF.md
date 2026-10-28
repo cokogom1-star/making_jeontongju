@@ -6,7 +6,9 @@ The 320 px Chromium verifier now reads 27 fictional Cafe24/Coupang notices
 from its disposable PostgreSQL schema and checks the private inbox's 25+2
 pagination, exact ID coverage, keyboard navigation to the next page and back,
 no document overflow, and unchanged notice/observation ledgers. A synthetic
-notice is excluded. It also injects connection and page-query failures on
+notice is excluded. The seven-column table keeps a readable minimum width
+inside its keyboard-focusable horizontal scroll region. The verifier also
+injects connection and page-query failures on
 both pages, checks the Korean HTTP 503 recovery page, private headers,
 diagnostic suppression, and a keyboard retry to the same page and cursor.
 All browser and application HTTP remains local; no provider or Slack request
