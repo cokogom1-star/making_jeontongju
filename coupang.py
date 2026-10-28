@@ -65,7 +65,13 @@ def order_summaries(start, end, status='ACCEPT', get=requests.get):
                    headers={'Authorization': auth, 'X-Requested-By': vendor}, timeout=(5, 20))
     response.raise_for_status()
     payload = response.json()
-    if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
+    # HTTP 200 alone is not a successful order-list response. A provider error
+    # with an empty data array must not be mistaken for an empty order window.
+    # The by-minute response documents nextToken but no request token; fail
+    # closed rather than silently recording only its first page.
+    if (not isinstance(payload, dict) or type(payload.get('code')) is not int
+            or payload['code'] != 200 or not isinstance(payload.get('data'), list)
+            or payload.get('nextToken') is not None):
         raise ValueError('Unexpected Coupang response')
     summaries = []
     for item in payload['data']:
