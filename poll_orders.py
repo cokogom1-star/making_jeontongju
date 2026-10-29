@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 
 from cafe24 import database, order_summaries as cafe24_orders
-from coupang import KST, configured as coupang_configured, order_summaries as coupang_orders
+from coupang import KST, order_summaries as coupang_orders
 from order_notifications import poll_and_deliver
 
 
@@ -19,8 +19,7 @@ def run(now=None):
     sources = {}
     if os.environ.get('CAFE24_ORDER_READ_ENABLED', '').lower() == 'true':
         sources['cafe24'] = cafe24_orders
-    if (os.environ.get('COUPANG_ORDER_READ_ENABLED', '').lower() == 'true'
-            and coupang_configured()):
+    if os.environ.get('COUPANG_ORDER_READ_ENABLED', '').lower() == 'true':
         sources['coupang'] = coupang_orders
     if not sources:
         raise ValueError('No order-reading channel enabled')
