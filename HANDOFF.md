@@ -1,5 +1,25 @@
 # Handoff
 
+## Enabled Coupang polling with missing Wing credentials
+
+The scheduled poller now includes Coupang whenever `COUPANG_ORDER_READ_ENABLED=true`,
+even if a Wing credential is missing. Previously it silently omitted Coupang
+when Cafe24 was also enabled, letting the job report success without checking
+the Coupang window. The existing Coupang adapter rejects missing credentials
+before an HTTP request. The poller's provider-error isolation still records
+healthy Cafe24 orders and flushes queued real-channel notices, then raises the
+configuration error so the scheduler reports failure. With Coupang alone, the
+job also fails visibly; with its read flag disabled, it remains excluded.
+
+The disposable-PostgreSQL verifier removes all or each individual Wing key in
+turn, checks the visible failure, Cafe24 observation, both a prior Coupang
+notice and a new Cafe24 notice delivered through mock Slack, and no new Coupang
+observation. It also checks enabled/disabled source selection and the
+Coupang-only missing-key case. External HTTP remains blocked by the verifier's
+session transport guard. No real provider or webhook was contacted. An
+exact-head CI run is required before promotion; these checks do not establish
+live Wing connectivity or Slack receipt.
+
 ## Channel poll isolation after a provider fetch failure
 
 Previously, a Cafe24 or Coupang fetch exception aborted the polling loop before

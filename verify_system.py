@@ -84,6 +84,7 @@ def main():
             import coupang
             import direct_checkout
             import order_notifications as notices
+            import poll_orders
             import send_synthetic_orders
             import synthetic_order_history as fulfillment
             import test_orders
@@ -403,6 +404,84 @@ def main():
                                 self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_channel_order_event
                                     WHERE source = %s AND order_id = %s''',
                                     (healthy, current)).fetchone()[0], 1)
+
+                def test_enabled_coupang_missing_keys_reports_failure_after_healthy_channel(self):
+                    now = datetime(2026, 10, 29, 12, tzinfo=timezone.utc)
+                    keys = ('COUPANG_VENDOR_ID', 'COUPANG_ACCESS_KEY', 'COUPANG_SECRET_KEY')
+                    valid = dict(zip(keys, ('VERIFY123', 'synthetic-access', 'synthetic-secret')))
+                    webhook = 'https://hooks.slack.com/services/A/B/C'
+                    for missing in (keys, *[(key,) for key in keys]):
+                        with self.subTest(missing=missing):
+                            with cafe24.database() as conn:
+                                conn.execute('TRUNCATE ourisul_order_notice, ourisul_channel_order_state, '
+                                             'ourisul_channel_order_event')
+                            config = {**valid, **{key: '' for key in missing},
+                                      'CAFE24_ORDER_READ_ENABLED': 'true',
+                                      'COUPANG_ORDER_READ_ENABLED': 'true',
+                                      'SLACK_ORDER_WEBHOOK_URL': webhook}
+                            row = {'order_id': 'CAFE-HEALTHY', 'status': 'N10',
+                                   'ordered_at': now.isoformat(), 'item_count': 1}
+                            prior = {**row, 'order_id': 'COUPANG-PRIOR', 'status': 'ACCEPT'}
+                            self.assertEqual(notices.record_orders('coupang', [prior], cafe24.database), 1)
+                            cafe_fetch = Mock(return_value=[row])
+                            fake_post = Mock(return_value=response(text='ok'))
+                            def poll(sources, start, end, connect):
+                                return notices.poll_and_deliver(sources, start, end, connect,
+                                                                webhook_url=webhook, post=fake_post)
+                            with patch.dict(os.environ, config), patch.object(
+                                    poll_orders, 'cafe24_orders', cafe_fetch), patch.object(
+                                    poll_orders, 'poll_and_deliver', side_effect=poll):
+                                with self.assertRaisesRegex(ValueError, 'Coupang Wing API is not connected'):
+                                    poll_orders.run(now)
+                            cafe_fetch.assert_called_once_with(now - timedelta(hours=1), now)
+                            self.assertEqual(fake_post.call_count, 2)
+                            sent_text = [call.kwargs['json']['text'] for call in fake_post.call_args_list]
+                            self.assertTrue(any('CAFE-HEALTHY' in text for text in sent_text))
+                            self.assertTrue(any('COUPANG-PRIOR' in text for text in sent_text))
+                            with cafe24.database() as conn:
+                                self.assertEqual(conn.execute('''SELECT source, order_id, delivered_at IS NOT NULL
+                                    FROM ourisul_order_notice ORDER BY source''').fetchall(),
+                                    [('cafe24', 'CAFE-HEALTHY', True),
+                                     ('coupang', 'COUPANG-PRIOR', True)])
+                                self.assertEqual(conn.execute('''SELECT source, order_id FROM
+                                    ourisul_channel_order_state ORDER BY source''').fetchall(),
+                                    [('cafe24', 'CAFE-HEALTHY'), ('coupang', 'COUPANG-PRIOR')])
+
+                def test_coupang_poll_flag_controls_source_selection(self):
+                    now = datetime(2026, 10, 29, 12, tzinfo=timezone.utc)
+                    config = {'CAFE24_ORDER_READ_ENABLED': 'true',
+                              'COUPANG_ORDER_READ_ENABLED': 'false'}
+                    cafe_fetch = Mock(return_value=[])
+                    coupang_fetch = Mock(side_effect=AssertionError('Disabled Coupang was fetched'))
+                    capture = Mock(return_value={'new_orders': {'cafe24': 0}, 'delivered': 0, 'failed': 0})
+                    with patch.dict(os.environ, config), patch.object(
+                            poll_orders, 'cafe24_orders', cafe_fetch), patch.object(
+                            poll_orders, 'coupang_orders', coupang_fetch), patch.object(
+                            poll_orders, 'poll_and_deliver', capture):
+                        self.assertEqual(poll_orders.run(now), capture.return_value)
+                    self.assertEqual(list(capture.call_args.args[0]), ['cafe24'])
+                    coupang_fetch.assert_not_called()
+                    config['COUPANG_ORDER_READ_ENABLED'] = 'true'
+                    config.update({'COUPANG_VENDOR_ID': 'VERIFY123',
+                                   'COUPANG_ACCESS_KEY': 'synthetic-access',
+                                   'COUPANG_SECRET_KEY': 'synthetic-secret'})
+                    with patch.dict(os.environ, config), patch.object(
+                            poll_orders, 'cafe24_orders', cafe_fetch), patch.object(
+                            poll_orders, 'coupang_orders', coupang_fetch), patch.object(
+                            poll_orders, 'poll_and_deliver', capture):
+                        poll_orders.run(now)
+                    self.assertEqual(list(capture.call_args.args[0]), ['cafe24', 'coupang'])
+
+                    config.update({'CAFE24_ORDER_READ_ENABLED': 'false',
+                                   'COUPANG_ACCESS_KEY': ''})
+                    with patch.dict(os.environ, config), patch.object(
+                            poll_orders, 'poll_and_deliver', side_effect=lambda sources, start, end, connect:
+                                notices.poll_and_deliver(
+                                    sources, start, end, connect,
+                                    webhook_url='https://hooks.slack.com/services/A/B/C',
+                                    post=Mock(return_value=response(text='ok')))):
+                        with self.assertRaisesRegex(ValueError, 'Coupang Wing API is not connected'):
+                            poll_orders.run(now)
 
                 def test_record_failure_still_aborts_before_outbox_flush(self):
                     start = datetime(2026, 10, 1, tzinfo=timezone.utc)
