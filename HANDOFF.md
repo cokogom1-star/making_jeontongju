@@ -1,5 +1,26 @@
 # Handoff
 
+## Channel poll isolation after a provider fetch failure
+
+Previously, a Cafe24 or Coupang fetch exception aborted the polling loop before
+the later configured channel was fetched and before already queued notices were
+sent. A temporary provider error could therefore delay a healthy channel and
+its pending Slack outbox. The poller now continues to the other source when a
+fetch raises `requests.RequestException` or `ValueError`, then flushes pending
+real-channel notices. It still raises the first fetch error after delivery so
+the scheduler reports failure and the same time window can be retried. A failed
+source contributes no new rows; a successful source commits its notices and
+observations. Database/record failures still abort without an outbox flush.
+One run can send previously queued notices even while reporting a provider
+fetch error.
+
+The disposable-PostgreSQL verifier covers failure in either source order,
+delivery of a prior notice and the healthy source's notice, unchanged failed
+source rows, and a same-window retry that adds only the missing order. A separate
+injected record failure confirms database errors remain fatal. All provider
+and Slack calls are mock adapters, so this does not establish live provider
+connectivity or Slack receipt. Exact-head CI must pass before promotion.
+
 ## Coupang order-list response validation
 
 The scheduled Coupang adapter now accepts a by-minute order-list response only
