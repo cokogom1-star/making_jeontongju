@@ -299,8 +299,9 @@ def poll_and_deliver(sources, start, end, connect, webhook_url=None, post=reques
     """Fetch real channel order summaries and flush the Slack outbox.
 
     sources maps a channel name to its ``order_summaries(start, end)`` callable.
-    On a channel failure, earlier recorded orders remain queued for retry; the
-    caller should rerun the same time window to avoid missing any orders.
+    A provider-fetch failure does not block the other channel or queued outbox
+    delivery. The failure is still raised; rerun the same time window to avoid
+    missing orders from that channel. Database write failures remain fatal.
     """
     webhook_url = webhook_url or os.environ.get('SLACK_ORDER_WEBHOOK_URL')
     if not webhook_valid(webhook_url):
@@ -308,7 +309,17 @@ def poll_and_deliver(sources, start, end, connect, webhook_url=None, post=reques
     if not isinstance(sources, dict) or not sources or set(sources) - SOURCES:
         raise ValueError('Invalid order sources')
     counts = {}
+    fetch_error = None
     for source, fetch in sources.items():
-        counts[source] = record_orders(source, fetch(start, end), connect)
-    return {'new_orders': counts, **deliver_pending(connect, webhook_url, post=post)}
+        try:
+            rows = fetch(start, end)
+        except (requests.RequestException, ValueError) as exc:
+            if fetch_error is None:
+                fetch_error = exc
+            continue
+        counts[source] = record_orders(source, rows, connect)
+    delivery = deliver_pending(connect, webhook_url, post=post)
+    if fetch_error is not None:
+        raise fetch_error
+    return {'new_orders': counts, **delivery}
 

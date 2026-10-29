@@ -301,6 +301,7 @@ def main():
                         self.assertEqual(notices.record_orders('coupang', rows, cafe24.database), 1)
                         fake_get.return_value = response({'code': 200, 'data': [], 'nextToken': None})
                         self.assertEqual(coupang.order_summaries(start, start + timedelta(hours=1), get=fake_get), [])
+                        pending_post = Mock(return_value=response(text='ok'))
                         for bad_payload in ({'code': 500, 'data': []},
                                             {'code': True, 'data': []},
                                             {'code': '200', 'data': []},
@@ -315,11 +316,16 @@ def main():
                                     {'coupang': lambda a, b: coupang.order_summaries(a, b, get=fake_get)},
                                     start, start + timedelta(hours=1), cafe24.database,
                                     webhook_url='https://hooks.slack.com/services/A/B/C',
-                                    post=Mock(side_effect=AssertionError('Unexpected Slack request')))
+                                    post=pending_post)
+                        # The previously saved notice can flush even though each
+                        # malformed provider body still fails the poll.
+                        self.assertEqual(pending_post.call_count, 1)
                         with cafe24.database() as conn:
                             self.assertEqual(conn.execute('''SELECT source, order_id, status
                                 FROM ourisul_order_notice WHERE source = 'coupang' ''').fetchall(),
                                 [('coupang', '123', 'ACCEPT')])
+                            self.assertIsNotNone(conn.execute('''SELECT delivered_at
+                                FROM ourisul_order_notice WHERE source = 'coupang' ''').fetchone()[0])
                             self.assertEqual(conn.execute('''SELECT status FROM ourisul_channel_order_event
                                 WHERE source = 'coupang' ORDER BY id''').fetchall(), [('ACCEPT',)])
                             self.assertEqual(conn.execute('''SELECT order_id, status
@@ -332,6 +338,94 @@ def main():
                         with self.assertRaises(ValueError):
                             coupang.order_summaries(start, start + timedelta(hours=24), get=fake_get)
                         self.assertEqual(fake_get.call_count, before)
+
+                def test_provider_failure_does_not_starve_other_channel_or_pending_notices(self):
+                    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+                    webhook = 'https://hooks.slack.com/services/A/B/C'
+
+                    def row(order_id):
+                        return {'order_id': order_id, 'status': 'PAID',
+                                'ordered_at': start.isoformat(), 'item_count': 1,
+                                'buyer_email': 'PRIVATE@example.invalid'}
+
+                    for failed, healthy, error in (
+                            ('cafe24', 'coupang', requests.HTTPError('synthetic fetch failure')),
+                            ('coupang', 'cafe24', ValueError('synthetic provider body'))):
+                        with self.subTest(failed=failed):
+                            prior, current, recovered = (f'{failed}-{suffix}' for suffix in
+                                                         ('PRIOR', 'CURRENT', 'RECOVERED'))
+                            self.assertEqual(notices.record_orders(failed, [row(prior)], cafe24.database), 1)
+                            failing_fetch = Mock(side_effect=error)
+                            healthy_fetch = Mock(return_value=[row(current)])
+                            sources = ({failed: failing_fetch, healthy: healthy_fetch}
+                                       if failed == 'cafe24' else
+                                       {healthy: healthy_fetch, failed: failing_fetch})
+                            fake_post = Mock(return_value=response(text='ok'))
+                            with self.assertRaises(type(error)) as raised:
+                                notices.poll_and_deliver(sources, start, start + timedelta(hours=1),
+                                                         cafe24.database, webhook_url=webhook,
+                                                         post=fake_post)
+                            self.assertIs(raised.exception, error)
+                            self.assertEqual(failing_fetch.call_count, 1)
+                            self.assertEqual(healthy_fetch.call_count, 1)
+                            self.assertEqual(fake_post.call_count, 2)
+                            sent_text = [call.kwargs['json']['text'] for call in
+                                         fake_post.call_args_list]
+                            self.assertTrue(any(prior in message for message in sent_text))
+                            self.assertTrue(any(current in message for message in sent_text))
+                            self.assertTrue(all('PRIVATE' not in message for message in sent_text))
+                            with cafe24.database() as conn:
+                                self.assertEqual(conn.execute('''SELECT source, order_id
+                                    FROM ourisul_order_notice WHERE order_id IN (%s, %s, %s)
+                                    ORDER BY order_id''', (prior, current, recovered)).fetchall(),
+                                    sorted([(failed, prior), (healthy, current)], key=lambda x: x[1]))
+                                self.assertEqual(conn.execute('''SELECT count(*)
+                                    FROM ourisul_channel_order_event WHERE source = %s
+                                    AND order_id = %s''', (failed, recovered)).fetchone()[0], 0)
+                                self.assertEqual(conn.execute('''SELECT count(*)
+                                    FROM ourisul_order_notice WHERE order_id IN (%s, %s)
+                                    AND delivered_at IS NOT NULL''', (prior, current)).fetchone()[0], 2)
+                            # The scheduler's same-window retry records the missing
+                            # channel exactly once and leaves earlier notices intact.
+                            retry_sources = {failed: lambda a, b: [row(recovered)],
+                                             healthy: healthy_fetch}
+                            result = notices.poll_and_deliver(retry_sources, start,
+                                                              start + timedelta(hours=1),
+                                                              cafe24.database, webhook_url=webhook,
+                                                              post=fake_post)
+                            self.assertEqual(result['new_orders'], {failed: 1, healthy: 0})
+                            self.assertEqual(result['delivered'], 1)
+                            self.assertEqual(fake_post.call_count, 3)
+                            with cafe24.database() as conn:
+                                self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_order_notice
+                                    WHERE source = %s AND order_id = %s''',
+                                    (failed, recovered)).fetchone()[0], 1)
+                                self.assertEqual(conn.execute('''SELECT count(*) FROM ourisul_channel_order_event
+                                    WHERE source = %s AND order_id = %s''',
+                                    (healthy, current)).fetchone()[0], 1)
+
+                def test_record_failure_still_aborts_before_outbox_flush(self):
+                    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+                    row = {'order_id': 'WRITE-PRIOR', 'status': 'PAID',
+                           'ordered_at': start.isoformat(), 'item_count': 1}
+                    notices.record_orders('cafe24', [row], cafe24.database)
+                    fake_post = Mock(side_effect=AssertionError('Unexpected Slack request'))
+                    for record_error in (ValueError('synthetic invalid record'),
+                                         psycopg.OperationalError('synthetic database failure')):
+                        with self.subTest(error=type(record_error).__name__), patch.object(
+                                notices, 'record_orders', side_effect=record_error), self.assertRaises(
+                                    type(record_error)) as raised:
+                            notices.poll_and_deliver({'coupang': lambda a, b: [row]},
+                                                     start, start + timedelta(hours=1),
+                                                     cafe24.database,
+                                                     webhook_url='https://hooks.slack.com/services/A/B/C',
+                                                     post=fake_post)
+                        self.assertIs(raised.exception, record_error)
+                    fake_post.assert_not_called()
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT attempts, delivered_at
+                            FROM ourisul_order_notice WHERE source = 'cafe24'
+                            AND order_id = 'WRITE-PRIOR' ''').fetchone(), (0, None))
 
                 def test_channel_observations_preserve_first_notice_and_deduplicate(self):
                     def summary(status, order_id='OBS-1'):
