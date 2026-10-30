@@ -485,7 +485,6 @@ def main():
                             ourisul_channel_order_state ORDER BY source''').fetchall(),
                             [('cafe24', 'CAFE-PRIOR'), ('coupang', 'COUPANG-HEALTHY')])
 
-
                 def test_coupang_poll_flag_controls_source_selection(self):
                     now = datetime(2026, 10, 29, 12, tzinfo=timezone.utc)
                     config = {'CAFE24_ORDER_READ_ENABLED': 'true',
