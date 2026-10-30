@@ -1,5 +1,22 @@
 # Handoff
 
+## Enabled Cafe24 polling without an OAuth token
+
+When the Cafe24 read flag is enabled but its OAuth token is absent, the Cafe24
+adapter returns `None`. The poller now treats that result as a provider
+availability error during fetch. It still collects a healthy Coupang source
+and flushes queued real-channel notices through the outbox, then raises the
+Cafe24 error so the scheduler reports failure. An empty list remains a valid
+empty order window. Malformed batches and database write errors remain fatal.
+
+The disposable-PostgreSQL verifier removes only its synthetic Cafe24 token,
+enables both sources, and checks visible failure, Coupang observation, and
+mock Slack delivery of a prior Cafe24 notice and the new Coupang notice.
+External HTTP is blocked. Exact-head CI is required before promotion; this
+does not establish live Cafe24 connectivity or Slack receipt.
+
+## Enabled Coupang polling with missing Wing credentials
+
 ## Enabled Coupang polling with missing Wing credentials
 
 The scheduled poller now includes Coupang whenever `COUPANG_ORDER_READ_ENABLED=true`,
