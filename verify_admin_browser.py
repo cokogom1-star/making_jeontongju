@@ -105,6 +105,8 @@ def main():
             thread = Thread(target=server.serve_forever, daemon=True)
             thread.start()
             base = f'http://127.0.0.1:{server.server_port}'
+            homepage_hero = ('https://images.unsplash.com/photo-1536935338788-846bb9981813'
+                             '?auto=format&fit=crop&w=1800&q=80')
 
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=True)
@@ -120,6 +122,11 @@ def main():
                     target = urlparse(route.request.url)
                     if target.scheme == 'http' and target.netloc == urlparse(base).netloc:
                         route.continue_()
+                    elif (route.request.url == homepage_hero
+                          and route.request.resource_type == 'image'
+                          and route.request.frame.url == base + '/'):
+                        # Stub this exact homepage decoration without external HTTP.
+                        route.fulfill(status=204, body=b'')
                     else:
                         blocked_urls.append(route.request.url)
                         route.abort()

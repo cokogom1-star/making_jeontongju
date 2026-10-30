@@ -3080,6 +3080,20 @@ def main():
                         with psycopg.connect(isolated_dsn) as conn:
                             self.assertIsNone(conn.execute('SELECT order_id FROM ourisul_test_orders WHERE order_id=%s',
                                                            (draft['id'],)).fetchone())
+                        with patch.object(customer_order, 'record_test_order',
+                                          side_effect=psycopg.OperationalError('private')):
+                            unavailable = self.post('/order-rehearsal/confirm', data={
+                                'csrf': draft['csrf'], 'order_id': draft['id']})
+                        self.assertEqual(unavailable.status_code, 503)
+                        recovery = unavailable.get_data(as_text=True)
+                        self.assertLess(recovery.index('이 ID의 기록 다시 확인'),
+                                        recovery.index('같은 가상 기록 요청 다시 시도'))
+                        self.assertIn(f'name="order_id" value="{draft["id"]}"', recovery)
+                        self.assertIn(f'name="csrf" value="{draft["csrf"]}"', recovery)
+                        self.assertNotIn('private', recovery)
+                        with psycopg.connect(isolated_dsn) as conn:
+                            self.assertIsNone(conn.execute('SELECT order_id FROM ourisul_test_orders WHERE order_id=%s',
+                                                           (draft['id'],)).fetchone())
                         confirmed = self.post('/order-rehearsal/confirm', data={
                             'csrf': draft['csrf'], 'order_id': draft['id']})
                         self.assertEqual(confirmed.status_code, 303)
@@ -3120,6 +3134,9 @@ def main():
                                 'csrf': draft['csrf'], 'order_id': draft['id']})
                             self.assertEqual(failed.status_code, 503)
                             self.assertNotIn('private', failed.get_data(as_text=True))
+                            self.assertIn('같은 가상 기록 요청 다시 시도', failed.get_data(as_text=True))
+                        self.assertEqual(self.post('/order-rehearsal/confirm', data={
+                            'csrf': draft['csrf'], 'order_id': draft['id']}).status_code, 303)
                     with patch.dict(os.environ, {**sandbox_env,
                                                   'DATABASE_URL': isolated_dsn}):
                         self.assertEqual(self.get('/order-rehearsal').status_code, 404)

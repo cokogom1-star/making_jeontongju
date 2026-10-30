@@ -94,6 +94,9 @@ PAGE = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 {% else %}
 <p>{{guidance}}</p>{% if order_id %}<p>가상 기록 ID: <strong>{{order_id}}</strong></p>
 <p><a href="{{url_for('customer_order.receipt', order_id=order_id)}}">이 ID의 기록 다시 확인</a></p>{% endif %}
+{% if retry_draft %}<form method="post" action="{{url_for('customer_order.confirm')}}">
+<input type="hidden" name="csrf" value="{{retry_draft.csrf}}"><input type="hidden" name="order_id" value="{{retry_draft.id}}">
+<button>같은 가상 기록 요청 다시 시도</button></form>{% endif %}
 <p><a href="{{url_for('customer_order.start')}}">새 연습 시작</a></p>
 {% endif %}</main></body></html>''')
 
@@ -102,11 +105,13 @@ def show(title, stage, status=200, **values):
     return render_template_string(PAGE, title=title, stage=stage, **values), status
 
 
-def error(status, guidance, order_id=None):
+def error(status, guidance, order_id=None, retry_confirm=False):
     owned = session.get('customer_order_ids', [])
     draft = session.get('customer_draft') or {}
     return show('가상 주문을 확인해 주세요', 'error', status, guidance=guidance,
-                order_id=order_id if order_id in owned or order_id == draft.get('id') else None)
+                order_id=order_id if order_id in owned or order_id == draft.get('id') else None,
+                retry_draft=draft if retry_confirm and order_id == draft.get('id')
+                and draft.get('csrf') and draft.get('scenario') else None)
 
 
 def valid_csrf(draft):
@@ -174,7 +179,8 @@ def confirm():
         record_test_order(order_id, connect=sandbox_database, scenario=draft['scenario'])
     except psycopg.OperationalError:
         # Commit may have succeeded. Retain exactly the same ID and basket.
-        return error(503, '저장 여부를 확인할 수 없습니다. 이 ID의 기록을 먼저 확인한 뒤 같은 요청을 다시 제출하세요.', order_id)
+        return error(503, '저장 여부를 확인할 수 없습니다. 이 ID의 기록을 먼저 확인한 뒤 같은 요청을 다시 제출하세요.',
+                     order_id, retry_confirm=True)
     except ValueError:
         return error(409, '저장된 가상 수량이 다릅니다. 새 연습을 시작해 주세요.')
     owned = session.get('customer_order_ids', [])
