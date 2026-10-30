@@ -313,6 +313,8 @@ def poll_and_deliver(sources, start, end, connect, webhook_url=None, post=reques
     for source, fetch in sources.items():
         try:
             rows = fetch(start, end)
+            if rows is None:
+                raise ValueError(f'Order source is unavailable: {source}')
         except (requests.RequestException, ValueError) as exc:
             if fetch_error is None:
                 fetch_error = exc
