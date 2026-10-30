@@ -17,8 +17,6 @@ does not establish live Cafe24 connectivity or Slack receipt.
 
 ## Enabled Coupang polling with missing Wing credentials
 
-## Enabled Coupang polling with missing Wing credentials
-
 The scheduled poller now includes Coupang whenever `COUPANG_ORDER_READ_ENABLED=true`,
 even if a Wing credential is missing. Previously it silently omitted Coupang
 when Cafe24 was also enabled, letting the job report success without checking
