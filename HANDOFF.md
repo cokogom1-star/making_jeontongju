@@ -1,5 +1,41 @@
 # Handoff
 
+## Customer-facing fictional order rehearsal (feature gated)
+
+`/order-rehearsal` lets a visitor select quantities for two explicitly fictional
+items, review them before writing, record one synthetic order, and revisit its
+receipt/status history by exact ID in the same signed browser session. The
+homepage links to the rehearsal only while it is enabled. The public route
+never exposes the administrator's transition controls, Slack outbox state,
+payment, real catalog items, customer data, or a shipment. Review and lookup
+do not write order rows. Confirmation calls the existing atomic synthetic
+order/item/state/event/outbox writer with a server-issued ID; exact same-ID
+resubmission is idempotent. It retains the draft on an ambiguous database
+failure so the visitor can first check that exact ID and then retry the same
+request. Receipt reads the existing consistent snapshot, showing only
+fictional items and simulated status history.
+
+Activation requires `CUSTOMER_ORDER_REHEARSAL_ENABLED=true`, the existing
+`SYNTHETIC_ORDER_TEST_ENABLED=true`, `STORE_LIVE` not true, a Flask signing
+secret, `DATABASE_URL`, and an explicit `CUSTOMER_REHEARSAL_DATABASE_URL`.
+The latter must name a separate database containing `sandbox`, `verify`, or
+`test` and must use explicit host/user credentials. A missing, malformed,
+service-based, or same-database configuration returns 404. Both public reads
+and writes use that dedicated DSN; no Render setting is enabled by this PR.
+The signed session limits receipt and lookup access to its own IDs; this is a
+local rehearsal, not a durable customer account or recoverable real order.
+
+The disposable PostgreSQL verifier checks gate isolation, validation and
+duplicate fields, review before write, exact replay in five ledgers, receipt
+status after a simulated admin update, cross-session denial, and private
+database error responses. The 320 px Chromium verifier checks homepage
+discovery, keyboard selection/review/confirmation/receipt/lookup, narrow
+document width, and cross-session denial. CI uses synthetic fixtures and a
+disposable schema with external HTTP blocked; a fake primary DSN is used only
+inside these test cases to prove every public operation uses the isolated
+sandbox connection. No live purchase, provider call, or Slack delivery occurs.
+Exact-head CI must pass before promotion.
+
 ## Enabled Cafe24 polling without an OAuth token
 
 When the Cafe24 read flag is enabled but its OAuth token is absent, the Cafe24

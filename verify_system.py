@@ -3046,6 +3046,86 @@ def main():
                     self.assertEqual(self.get('/taste-explorer?aroma=fruit').status_code, 400)
                     self.assertEqual(self.get('/taste-explorer?category=beer').status_code, 400)
 
+                def test_customer_fictional_order_review_receipt_and_isolation(self):
+                    import customer_order
+                    # The public route must never use the application's primary DB.
+                    sandbox_env = {'CUSTOMER_ORDER_REHEARSAL_ENABLED': 'true',
+                                   'CUSTOMER_REHEARSAL_DATABASE_URL': isolated_dsn,
+                                   'DATABASE_URL': make_conninfo(dsn, dbname='ourisul_production_not_connected')}
+                    with patch.object(customer_order.psycopg, 'connect', side_effect=AssertionError('DB accessed')):
+                        self.assertEqual(self.get('/order-rehearsal').status_code, 404)
+                    with patch.dict(os.environ, sandbox_env):
+                        self.assertEqual(self.get('/order-rehearsal').status_code, 200)
+                        with patch('app.products_for_page', return_value=([], None, False)):
+                            self.assertIn('/order-rehearsal', self.get('/').get_data(as_text=True))
+                        with self.client.session_transaction() as sess:
+                            draft = dict(sess['customer_draft'])
+                        target = '/order-rehearsal/review'
+                        basket = {'csrf': draft['csrf'], 'order_id': draft['id'],
+                                  'SYNTHETIC-CHEONGJU': '2', 'SYNTHETIC-TAKJU': '1'}
+                        for malformed in ({**basket, 'SYNTHETIC-CHEONGJU': '11'},
+                                          {**basket, 'SYNTHETIC-CHEONGJU': '0', 'SYNTHETIC-TAKJU': '0'},
+                                          {**basket, 'SYNTHETIC-CHEONGJU': '1.5'}):
+                            self.assertEqual(self.post(target, data=malformed).status_code, 400)
+                        duplicate = [('csrf', draft['csrf']), ('order_id', draft['id']),
+                                     ('SYNTHETIC-CHEONGJU', '1'), ('SYNTHETIC-CHEONGJU', '2'),
+                                     ('SYNTHETIC-TAKJU', '1')]
+                        from werkzeug.datastructures import MultiDict
+                        self.assertEqual(self.post(target, data=MultiDict(duplicate)).status_code, 400)
+                        self.assertEqual(self.post(target, data=basket).status_code, 200)
+                        self.assertEqual(self.post(target, data={**basket,
+                            'SYNTHETIC-CHEONGJU': '3'}).status_code, 409)
+                        self.assertEqual(self.post('/order-rehearsal/confirm', data={
+                            'csrf': 'wrong', 'order_id': draft['id']}).status_code, 403)
+                        with psycopg.connect(isolated_dsn) as conn:
+                            self.assertIsNone(conn.execute('SELECT order_id FROM ourisul_test_orders WHERE order_id=%s',
+                                                           (draft['id'],)).fetchone())
+                        confirmed = self.post('/order-rehearsal/confirm', data={
+                            'csrf': draft['csrf'], 'order_id': draft['id']})
+                        self.assertEqual(confirmed.status_code, 303)
+                        receipt = confirmed.headers['Location']
+                        shown = self.get(receipt)
+                        self.assertEqual(shown.status_code, 200)
+                        self.assertIn('가상 주문 기록', shown.get_data(as_text=True))
+                        self.assertNotIn('Slack', shown.get_data(as_text=True))
+                        self.assertNotIn('request_key', shown.get_data(as_text=True))
+                        self.assertEqual(shown.headers['Cache-Control'], 'no-store')
+                        self.assertEqual(self.get('/order-rehearsal/lookup?order_id=' + draft['id']).status_code, 303)
+                        self.assertEqual(self.post('/order-rehearsal/confirm', data={
+                            'csrf': draft['csrf'], 'order_id': draft['id']}).status_code, 303)
+                        with psycopg.connect(isolated_dsn) as conn:
+                            for table in ('ourisul_test_orders', 'ourisul_test_order_item',
+                                          'ourisul_test_order_state', 'ourisul_test_order_event',
+                                          'ourisul_order_notice'):
+                                expected = 2 if table == 'ourisul_test_order_item' else 1
+                                self.assertEqual(conn.execute('SELECT count(*) FROM ' + table + ' WHERE order_id=%s',
+                                                              (draft['id'],)).fetchone()[0], expected)
+                        fulfillment.transition(draft['id'], 'TEST_PREPARED', 0,
+                                               'customer-read-only-check', connect=lambda: psycopg.connect(isolated_dsn))
+                        updated = self.get(receipt).get_data(as_text=True)
+                        self.assertIn('TEST_PREPARED', updated)
+                        self.assertNotIn('TEST_SHIPPED', updated)
+                        second = app.test_client()
+                        self.assertEqual(second.get(receipt, base_url='https://localhost').status_code, 404)
+                        self.assertEqual(second.get('/order-rehearsal/lookup?order_id=' + draft['id'],
+                                                    base_url='https://localhost').status_code, 404)
+                        self.assertEqual(second.post('/admin/orders/test/' + draft['id'] + '/history',
+                                                     base_url='https://localhost').status_code, 401)
+                        with patch.object(customer_order, 'order_snapshot', side_effect=psycopg.OperationalError('private')):
+                            failed = self.get(receipt)
+                            self.assertEqual(failed.status_code, 503)
+                            self.assertNotIn('private', failed.get_data(as_text=True))
+                        with patch.object(customer_order, 'record_test_order', side_effect=psycopg.OperationalError('private')):
+                            failed = self.post('/order-rehearsal/confirm', data={
+                                'csrf': draft['csrf'], 'order_id': draft['id']})
+                            self.assertEqual(failed.status_code, 503)
+                            self.assertNotIn('private', failed.get_data(as_text=True))
+                    with patch.dict(os.environ, {**sandbox_env,
+                                                  'DATABASE_URL': isolated_dsn}):
+                        self.assertEqual(self.get('/order-rehearsal').status_code, 404)
+                    with patch.dict(os.environ, {**sandbox_env, 'STORE_LIVE': 'true'}):
+                        self.assertEqual(self.get('/order-rehearsal').status_code, 404)
+
             class Results(unittest.TextTestResult):
                 def addSuccess(self, test):
                     super().addSuccess(test)

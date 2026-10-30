@@ -479,12 +479,66 @@ def main():
                         assert page.locator('tbody tr').count() == (25 if path == inbox_path else 2)
                         assert channel_rows() == inbox_before
 
+                from psycopg.conninfo import make_conninfo
+                sandbox_env = {'CUSTOMER_ORDER_REHEARSAL_ENABLED': 'true',
+                               'CUSTOMER_REHEARSAL_DATABASE_URL': isolated_dsn,
+                               'DATABASE_URL': make_conninfo(dsn, dbname='ourisul_production_not_connected')}
+                with patch.dict(os.environ, sandbox_env), patch('app.products_for_page',
+                                                               return_value=([], None, False)):
+                    landing = page.goto(base + '/')
+                    assert landing.status == 200
+                    link = page.get_by_role('link', name='가상 주문 흐름 연습')
+                    assert link.count() == 1
+                    link.focus()
+                    with page.expect_navigation() as navigation:
+                        page.keyboard.press('Enter')
+                    private_ok(navigation.value)
+                    check(page, '가상 주문 연습')
+                    fictional_id = page.locator('input[name="order_id"][type="hidden"]').input_value()
+                    page.locator('input[name="SYNTHETIC-CHEONGJU"]').fill('2')
+                    page.locator('input[name="SYNTHETIC-TAKJU"]').fill('1')
+                    page.get_by_role('button', name='선택한 가상 수량 확인').focus()
+                    with page.expect_navigation() as navigation:
+                        page.keyboard.press('Enter')
+                    private_ok(navigation.value)
+                    check(page, '가상 수량 확인')
+                    assert '가상 청주 · 2개' in page.locator('main').inner_text()
+                    page.get_by_role('button', name='이 가상 주문 기록').focus()
+                    with page.expect_navigation() as navigation:
+                        page.keyboard.press('Enter')
+                    private_ok(navigation.value)
+                    check(page, '가상 주문 기록')
+                    receipt_url = page.url
+                    assert fictional_id in page.locator('main').inner_text()
+                    assert 'Slack' not in page.locator('main').inner_text()
+                    outsider = browser.new_context(viewport={'width': 320, 'height': 640},
+                                                  is_mobile=True, has_touch=True)
+                    outsider_page = outsider.new_page()
+                    outsider_page.route('**/*', local_only)
+                    denied = outsider_page.goto(receipt_url)
+                    assert denied.status == 404
+                    assert '가상 청주 · 2개' not in outsider_page.locator('main').inner_text()
+                    outsider.close()
+                    page.goto(base + '/order-rehearsal')
+                    lookup = page.locator('input[name="order_id"][type="text"]')
+                    # Browser chooses the first text-compatible ID input.
+                    if lookup.count() == 0:
+                        lookup = page.locator('input#order_id')
+                    lookup.fill(fictional_id)
+                    page.get_by_role('button', name='기록 조회').focus()
+                    with page.expect_navigation() as navigation:
+                        page.keyboard.press('Enter')
+                    private_ok(navigation.value)
+                    check(page, '가상 주문 기록')
+                    assert page.url == receipt_url
+
                 assert not blocked_urls, 'Browser requested an external URL: ' + repr(blocked_urls)
                 assert outbound_request.call_count == 0, 'Application attempted external HTTP'
                 context.close()
                 browser.close()
             report['passed'] = True
             report['checks'] = ['keyboard rehearsal and three transitions',
+                                'customer sandbox mobile keyboard receipt, lookup and cross-session denial',
                                 '320px document width on each page', 'lookup and receipt recovery',
                                 'receipt-to-mock-sender failure, defer, retry and recorded delivery',
                                 'pre-write and post-commit failure retry with five-ledger idempotency',
