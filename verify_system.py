@@ -447,6 +447,44 @@ def main():
                                     ourisul_channel_order_state ORDER BY source''').fetchall(),
                                     [('cafe24', 'CAFE-HEALTHY'), ('coupang', 'COUPANG-PRIOR')])
 
+                def test_enabled_cafe24_missing_token_does_not_starve_coupang_or_outbox(self):
+                    now = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
+                    webhook = 'https://hooks.slack.com/services/A/B/C'
+                    prior = {'order_id': 'CAFE-PRIOR', 'status': 'N10',
+                             'ordered_at': now.isoformat(), 'item_count': 1}
+                    coupang_row = {'order_id': 'COUPANG-HEALTHY', 'status': 'ACCEPT',
+                                   'ordered_at': now.isoformat(), 'item_count': 1}
+                    self.assertEqual(notices.record_orders('cafe24', [prior], cafe24.database), 1)
+                    with cafe24.database() as conn:
+                        conn.execute('DELETE FROM ourisul_cafe24_token')
+                    coupang_fetch = Mock(return_value=[coupang_row])
+                    fake_post = Mock(return_value=response(text='ok'))
+
+                    def poll(sources, start, end, connect):
+                        return notices.poll_and_deliver(sources, start, end, connect,
+                                                        webhook_url=webhook, post=fake_post)
+
+                    with patch.dict(os.environ, {'CAFE24_ORDER_READ_ENABLED': 'true',
+                                                  'COUPANG_ORDER_READ_ENABLED': 'true',
+                                                  'SLACK_ORDER_WEBHOOK_URL': webhook}), patch.object(
+                            poll_orders, 'coupang_orders', coupang_fetch), patch.object(
+                            poll_orders, 'poll_and_deliver', side_effect=poll):
+                        with self.assertRaisesRegex(ValueError, 'Order source is unavailable: cafe24'):
+                            poll_orders.run(now)
+                    coupang_fetch.assert_called_once_with(now - timedelta(hours=1), now)
+                    self.assertEqual(fake_post.call_count, 2)
+                    sent = [call.kwargs['json']['text'] for call in fake_post.call_args_list]
+                    self.assertTrue(any('CAFE-PRIOR' in text for text in sent))
+                    self.assertTrue(any('COUPANG-HEALTHY' in text for text in sent))
+                    with cafe24.database() as conn:
+                        self.assertEqual(conn.execute('''SELECT source, order_id, delivered_at IS NOT NULL
+                            FROM ourisul_order_notice ORDER BY source''').fetchall(),
+                            [('cafe24', 'CAFE-PRIOR', True),
+                             ('coupang', 'COUPANG-HEALTHY', True)])
+                        self.assertEqual(conn.execute('''SELECT source, order_id FROM
+                            ourisul_channel_order_state ORDER BY source''').fetchall(),
+                            [('cafe24', 'CAFE-PRIOR'), ('coupang', 'COUPANG-HEALTHY')])
+
                 def test_coupang_poll_flag_controls_source_selection(self):
                     now = datetime(2026, 10, 29, 12, tzinfo=timezone.utc)
                     config = {'CAFE24_ORDER_READ_ENABLED': 'true',
