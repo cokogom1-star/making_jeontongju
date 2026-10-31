@@ -490,6 +490,7 @@ def main():
                 sandbox_env = {'CUSTOMER_ORDER_REHEARSAL_ENABLED': 'true',
                                'CUSTOMER_REHEARSAL_DATABASE_URL': isolated_dsn,
                                'DATABASE_URL': make_conninfo(dsn, dbname='ourisul_production_not_connected')}
+                customer_database = lambda: psycopg.connect(isolated_dsn, connect_timeout=10)
                 with patch.dict(os.environ, sandbox_env), patch('app.products_for_page',
                                                                return_value=([], None, False)):
                     landing = page.goto(base + '/')
@@ -518,6 +519,94 @@ def main():
                     receipt_url = page.url
                     assert fictional_id in page.locator('main').inner_text()
                     assert 'Slack' not in page.locator('main').inner_text()
+                    customer_created = saved_rows(customer_database)
+                    assert page.locator('main strong').last.inner_text() == 'TEST_CREATED'
+                    assert page.locator('ol li').count() == 1
+
+                    # Drive this same customer-owned ID through the exact-ID sender.
+                    # Its transport is injected, while the customer UI remains read-only.
+                    customer_posts = []
+
+                    def customer_post(url, **kwargs):
+                        customer_posts.append((url, kwargs))
+                        if len(customer_posts) == 1:
+                            raise requests.Timeout('customer rehearsal timeout')
+                        return SimpleNamespace(status_code=200, text='ok')
+
+                    with patch.dict(os.environ, {
+                            'DATABASE_URL': isolated_dsn,
+                            'SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED': 'true',
+                            'SLACK_TEST_ORDER_WEBHOOK_URL': webhook,
+                            'SLACK_ORDER_WEBHOOK_URL':
+                                'https://hooks.slack.com/services/VERIFY/VERIFY/REAL'}):
+                        assert notices.deliver_synthetic_pending(cafe24.database, fictional_id,
+                                                                 post=customer_post) == {
+                                                                     'delivered': 0, 'failed': 1}
+                        deferred_customer = saved_rows(customer_database)
+                        assert notices.deliver_synthetic_pending(cafe24.database, fictional_id,
+                                                                 post=customer_post) == {
+                                                                     'delivered': 0, 'failed': 0}
+                        assert len(customer_posts) == 1
+                        assert saved_rows(customer_database) == deferred_customer
+                        with cafe24.database() as conn:
+                            conn.execute('''UPDATE ourisul_order_notice
+                                SET next_attempt_at = now() - interval '1 second'
+                                WHERE source = 'synthetic' AND order_id = %s''', (fictional_id,))
+                        assert notices.deliver_synthetic_pending(cafe24.database, fictional_id,
+                                                                 post=customer_post) == {
+                                                                     'delivered': 1, 'failed': 0}
+                        delivered_customer = saved_rows(customer_database)
+                        assert notices.deliver_synthetic_pending(cafe24.database, fictional_id,
+                                                                 post=customer_post) == {
+                                                                     'delivered': 0, 'failed': 0}
+                        assert len(customer_posts) == 2
+                        assert saved_rows(customer_database) == delivered_customer
+                        for table in customer_created:
+                            if table != 'ourisul_order_notice':
+                                assert delivered_customer[table] == customer_created[table], table
+                        for version, button in enumerate(('합성 준비 완료', '합성 발송 처리',
+                                                          '합성 배송 완료')):
+                            private_ok(page.goto(base + f'/admin/orders/test/{fictional_id}/history?view=html'))
+                            check(page, '합성 주문 배송 상태')
+                            page.get_by_role('button', name=button).focus()
+                            with page.expect_navigation() as transition:
+                                page.keyboard.press('Enter')
+                            private_ok(transition.value)
+                            with cafe24.database() as conn:
+                                assert conn.execute('SELECT version FROM ourisul_test_order_state '
+                                                    'WHERE order_id = %s', (fictional_id,)).fetchone() == (
+                                                        version + 1,)
+                    assert customer_posts == [(webhook, {'json': {'text':
+                        f'[테스트·미운영] {fictional_id}'}, 'timeout': (5, 15),
+                        'allow_redirects': False})] * 2
+                    customer_final = saved_rows(customer_database)
+                    with customer_database() as conn:
+                        assert conn.execute('SELECT count(*) FROM ourisul_test_orders '
+                                            'WHERE order_id = %s', (fictional_id,)).fetchone() == (1,)
+                        assert conn.execute('SELECT item_id, quantity FROM ourisul_test_order_item '
+                                            'WHERE order_id = %s ORDER BY item_id',
+                                            (fictional_id,)).fetchall() == [
+                                                ('SYNTHETIC-CHEONGJU', 2), ('SYNTHETIC-TAKJU', 1)]
+                        assert conn.execute('SELECT status, version FROM ourisul_test_order_state '
+                                            'WHERE order_id = %s', (fictional_id,)).fetchone() == (
+                                                'TEST_DELIVERED', 3)
+                        assert conn.execute('SELECT version, to_status FROM ourisul_test_order_event '
+                                            'WHERE order_id = %s ORDER BY version',
+                                            (fictional_id,)).fetchall() == [
+                                                (0, 'TEST_CREATED'), (1, 'TEST_PREPARED'),
+                                                (2, 'TEST_SHIPPED'), (3, 'TEST_DELIVERED')]
+                        assert conn.execute('SELECT status, attempts, delivered_at IS NOT NULL '
+                                            'FROM ourisul_order_notice WHERE source = %s AND order_id = %s',
+                                            ('synthetic', fictional_id)).fetchone() == (
+                                                'TEST_CREATED', 2, True)
+                    private_ok(page.goto(receipt_url))
+                    check(page, '가상 주문 기록')
+                    assert page.locator('main strong').last.inner_text() == 'TEST_DELIVERED'
+                    assert [entry.inner_text().split('버전')[0].strip()
+                            for entry in page.locator('ol li').all()] == [
+                                'TEST_CREATED', 'TEST_PREPARED', 'TEST_SHIPPED', 'TEST_DELIVERED']
+                    assert 'Slack' not in page.locator('main').inner_text()
+                    assert saved_rows(customer_database) == customer_final
                     outsider = browser.new_context(viewport={'width': 320, 'height': 640},
                                                   is_mobile=True, has_touch=True)
                     outsider_page = outsider.new_page()
@@ -538,14 +627,19 @@ def main():
                     private_ok(navigation.value)
                     check(page, '가상 주문 기록')
                     assert page.url == receipt_url
+                    assert page.locator('main strong').last.inner_text() == 'TEST_DELIVERED'
+                    assert page.locator('ol li').count() == 4
+                    assert saved_rows(customer_database) == customer_final
 
                 assert not blocked_urls, 'Browser requested an external URL: ' + repr(blocked_urls)
                 assert outbound_request.call_count == 0, 'Application attempted external HTTP'
                 context.close()
                 browser.close()
             report['passed'] = True
+            report['customer_synthetic_order_id'] = fictional_id
             report['checks'] = ['keyboard rehearsal and three transitions',
-                                'customer sandbox mobile keyboard receipt, lookup and cross-session denial',
+                                'customer same-ID mock timeout, defer, retry, delivered and admin transitions',
+                                'customer final receipt, read-only lookup and cross-session denial',
                                 '320px document width on each page', 'lookup and receipt recovery',
                                 'receipt-to-mock-sender failure, defer, retry and recorded delivery',
                                 'pre-write and post-commit failure retry with five-ledger idempotency',
