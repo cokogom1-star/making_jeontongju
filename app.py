@@ -15,10 +15,12 @@ from prelaunch import dry_run
 from direct_checkout import bp as direct_checkout_bp, enabled as direct_checkout_test_enabled
 from test_orders import bp as test_orders_bp
 from channel_inbox import bp as channel_inbox_bp
+from customer_order import bp as customer_order_bp, enabled as customer_order_rehearsal_enabled
 init_app(app)
 app.register_blueprint(direct_checkout_bp)
 app.register_blueprint(test_orders_bp)
 app.register_blueprint(channel_inbox_bp)
+app.register_blueprint(customer_order_bp)
 
 
 def store_live():
@@ -112,7 +114,7 @@ footer{padding:60px 7%;border-top:1px solid #d8d1c4}@media(max-width:1150px){.de
 <section id="collection"><div class="eyebrow">OUR COLLECTION</div><div class="cards"><a class="card card-link" href="/stories#cheongju"><span>01</span><h3>청주</h3><p>맑고 섬세한 향을 가진 우리 술</p><span>이야기 보기 →</span></a><a class="card card-link" href="/stories#takju"><span>02</span><h3>탁주</h3><p>쌀과 누룩이 만들어내는 깊은 풍미</p><span>이야기 보기 →</span></a><a class="card card-link" href="/stories#soju"><span>03</span><h3>소주</h3><p>앞으로 만나게 될 새로운 우리술</p><span>이야기 보기 →</span></a></div><a class="text-link" href="/stories">술 이야기 더 보기 →</a></section>
 <section id="shop"><div class="eyebrow">SHOP OURISUL</div><h2>우리술 둘러보기</h2>{% if notice %}<p class="notice">{{notice}}</p>{% elif not products %}<p class="notice">등록된 상품이 없습니다.</p>{% else %}<div class="catalog">{% for product in products %}<a class="product" href="/products/{{product.number}}"><div class="product-image">{% if product.image %}<img src="{{product.image}}" alt="{{product.name}}" loading="lazy" referrerpolicy="no-referrer">{% else %}우리술{% endif %}</div><div class="product-copy"><h3>{{product.name}}</h3><p>{{product.price}}{% if not live %} · 시연용 가격{% endif %}</p><span class="status-label">{% if product.purchase_enabled %}판매 중{% elif live %}판매 준비 중{% else %}시연용 · 주문 불가{% endif %}</span></div></a>{% endfor %}</div>{% endif %}<a class="text-link" href="/products">상품 전체 보기 →</a> <a class="text-link" href="/guide">이용 안내 →</a></section>
 <section id="craft" class="story"><div class="eyebrow">CRAFT NOTES</div><h2 class="section-title">한 잔에 담기는 시간</h2><div class="steps"><article><strong>원료</strong><p>술의 바탕이 되는 재료를 살핍니다.</p></article><article><strong>발효</strong><p>누룩과 시간이 빚어내는 향과 맛을 소개합니다.</p></article><article><strong>기록</strong><p>앞으로 선보일 술의 제작 과정을 이곳에 기록할 예정입니다.</p></article></div><a class="text-link" href="/craft">양조 이야기 더 보기 →</a></section>
-<section id="guide" class="guide"><div class="eyebrow">SHOPPING GUIDE</div><h2 class="section-title">이용 안내</h2>{% if live %}<p>상품 상세에서 판매 채널을 선택하면 해당 채널의 주문 페이지로 이동합니다. 주문·결제·배송 안내는 선택한 판매 채널에서 확인해 주세요.</p>{% else %}<p>현재는 운영 준비 단계입니다. 표시된 상품은 시연용이며 이 사이트에서 주문을 받지 않습니다. 정식 상품과 판매 채널이 준비되면 구매 방법을 안내하겠습니다.</p>{% endif %}</section>
+<section id="guide" class="guide"><div class="eyebrow">SHOPPING GUIDE</div><h2 class="section-title">이용 안내</h2>{% if live %}<p>상품 상세에서 판매 채널을 선택하면 해당 채널의 주문 페이지로 이동합니다. 주문·결제·배송 안내는 선택한 판매 채널에서 확인해 주세요.</p>{% else %}<p>현재는 운영 준비 단계입니다. 표시된 상품은 시연용이며 이 사이트에서 주문을 받지 않습니다. 정식 상품과 판매 채널이 준비되면 구매 방법을 안내하겠습니다.</p>{% if customer_rehearsal %}<p><a class="button" href="/order-rehearsal">가상 주문 흐름 연습</a></p>{% endif %}{% endif %}</section>
 <section id="faq" class="faq"><div class="eyebrow">FAQ</div><h2 class="section-title">자주 묻는 질문</h2><details><summary>지금 상품을 주문할 수 있나요?</summary><p>{% if live %}상품 상세에 표시된 판매 채널에서 주문할 수 있습니다.{% else %}아직 주문을 받지 않습니다. 현재 상품은 시연용입니다.{% endif %}</p></details><details><summary>어떤 술을 소개하나요?</summary><p>청주와 탁주를 중심으로 우리 술의 종류와 이야기를 소개하고 있습니다. 실제 판매 상품은 출시 전에 안내합니다.</p></details><details><summary>쿠팡에서도 주문할 수 있나요?</summary><p>{% if live %}쿠팡에 등록된 상품은 상세 페이지에 쿠팡 구매 버튼이 표시됩니다.{% else %}쿠팡 판매 연동을 준비하고 있습니다. 실제 상품 등록 전에는 쿠팡 주문을 받지 않습니다.{% endif %}</p></details></section>
 <section id="contact" class="story"><div class="eyebrow">CONTACT</div><h2 class="section-title">우리의 술을<br>우리의 이름으로.</h2><p>정성껏 빚은 술을 소개합니다. 공식 문의 창구는 운영 시작 전에 안내하겠습니다.</p><a class="text-link" href="/contact">문의 안내 보기 →</a></section></main>
 <footer><strong>우리술</strong><br>우리의 술, 우리의 시간, 우리의 이야기.<nav class="footer-nav" aria-label="하단 메뉴"><a href="/about">브랜드</a><a href="/taste-explorer">취향 탐색</a><a href="/products">상품</a><a href="/guide">이용 안내</a><a href="/faq">FAQ</a><a href="/contact">문의</a></nav></footer>
@@ -123,7 +125,7 @@ footer{padding:60px 7%;border-top:1px solid #d8d1c4}@media(max-width:1150px){.de
 @app.route("/")
 def home():
     products, notice, _ = products_for_page()
-    return render_template_string(HTML.replace('href="#collection">우리술 만나기', 'href="#shop">우리술 만나기'), products=products, notice=notice, live=store_live())
+    return render_template_string(HTML.replace('href="#collection">우리술 만나기', 'href="#shop">우리술 만나기'), products=products, notice=notice, live=store_live(), customer_rehearsal=customer_order_rehearsal_enabled())
 
 
 PAGE_META = {
