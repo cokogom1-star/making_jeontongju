@@ -1,5 +1,26 @@
 # Handoff
 
+## October 31 customer lifecycle browser rehearsal
+
+The 320 px Chromium verifier now carries one session-owned fictional customer
+order through a mock Slack timeout, deferred retry, immediate no-op retry,
+mock delivery, and three administrator-simulated state transitions. It then
+reloads the customer receipt and exact-ID lookup to verify the four saved
+status events, read-only customer behavior across all five ledgers, and
+cross-session denial. The test records the synthetic ID in its result artifact
+only after all checks pass. Its PostgreSQL schema is disposable; no live order,
+provider, carrier, purchase, or Slack webhook is contacted. Exact-head CI is
+required before promotion. An existing project Slack destination was confirmed
+separately, but application webhook credentials and automatic routing remain
+unverified; a separate connector message cannot prove webhook delivery.
+
+The public seven-question taste explorer has a four-letter result shorthand
+and ranks 28 editorial styles. The synthetic order writer atomically records
+the basket, state, event, and outbox notice; status and customer rehearsal
+routes are default-off. Actual customer payment, fulfillment, carrier and
+provider flows are not implemented, and the editorial style result does not
+assert that a stocked product matches a visitor's answers.
+
 ## Customer-facing fictional order rehearsal (feature gated)
 
 `/order-rehearsal` lets a visitor select quantities for two explicitly fictional
