@@ -137,11 +137,14 @@ def record_orders(source, summaries, connect):
 
 
 def webhook_valid(url):
-    parsed = urlparse(url or '')
-    return (parsed.scheme == 'https' and parsed.hostname == WEBHOOK_HOST
-            and parsed.username is None and parsed.password is None
-            and parsed.port is None and not parsed.query and not parsed.fragment
-            and re.fullmatch(r'/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]+', parsed.path) is not None)
+    try:
+        parsed = urlparse(url or '')
+        return (parsed.scheme == 'https' and parsed.hostname == WEBHOOK_HOST
+                and parsed.username is None and parsed.password is None
+                and parsed.port is None and not parsed.query and not parsed.fragment
+                and re.fullmatch(r'/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]+', parsed.path) is not None)
+    except ValueError:
+        return False
 
 
 def _valid_synthetic_id(order_id):
@@ -220,19 +223,28 @@ def deliver_pending(connect, webhook_url=None, post=requests.post, limit=20):
                             post, limit, synthetic=False)
 
 
-def deliver_synthetic_pending(connect, order_id, post=requests.post):
-    """Attempt exactly one selected synthetic notice on the separate test webhook."""
-    _valid_synthetic_id(order_id)
+def synthetic_webhook_config():
+    """Validate the test sender's configuration without DB or HTTP access."""
     if os.environ.get('SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED') != 'true':
         raise ValueError('Synthetic notifications are disabled')
     test_webhook = os.environ.get('SLACK_TEST_ORDER_WEBHOOK_URL')
+    if not webhook_valid(test_webhook):
+        raise ValueError('Slack webhook is not configured')
     real_webhook = os.environ.get('SLACK_ORDER_WEBHOOK_URL')
-    if test_webhook and real_webhook:
+    if real_webhook:
+        if not webhook_valid(real_webhook):
+            raise ValueError('Slack order webhook is invalid')
         test_url, real_url = urlparse(test_webhook), urlparse(real_webhook)
         if ((test_url.scheme, test_url.hostname, test_url.path) ==
                 (real_url.scheme, real_url.hostname, real_url.path)):
             raise ValueError('Test and real Slack webhooks must differ')
-    return _deliver_pending(connect, test_webhook,
+    return test_webhook
+
+
+def deliver_synthetic_pending(connect, order_id, post=requests.post):
+    """Attempt exactly one selected synthetic notice on the separate test webhook."""
+    _valid_synthetic_id(order_id)
+    return _deliver_pending(connect, synthetic_webhook_config(),
                             post, 1, synthetic=True, order_id=order_id)
 
 

@@ -1,5 +1,20 @@
 # Handoff
 
+## Synthetic Slack webhook configuration preflight
+
+`python send_synthetic_orders.py --check-webhook-config` checks the synthetic
+sender's enable flag, Slack test webhook URL shape, and separation from the
+regular order webhook without connecting to PostgreSQL or sending HTTP. It
+prints only fixed configuration and non-delivery states; it does not print the
+webhook URL. `--send` uses the same validation before claiming a notice. The
+disposable PostgreSQL verifier checks valid, missing, malformed, disabled, and
+same-webhook cases with outbound HTTP blocked and database access forbidden
+for this preflight. A successful preflight does not verify Slack connectivity,
+channel routing, or message receipt. A separate authorized exact-ID send from
+a disposable database and observation of the intended destination are still
+needed; no live send is performed by this change. Exact-head CI is required
+before promotion.
+
 ## October 31 customer lifecycle browser rehearsal
 
 The 320 px Chromium verifier now carries one session-owned fictional customer
