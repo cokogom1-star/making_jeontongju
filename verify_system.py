@@ -2131,6 +2131,34 @@ def main():
                     sender = Mock(return_value=response())
                     with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL': test_webhook,
                                                  'SLACK_ORDER_WEBHOOK_URL': real_webhook}):
+                        with patch.object(send_synthetic_orders, '_verify_database',
+                                          side_effect=AssertionError('Database accessed')), patch.object(
+                                notices, '_deliver_pending', side_effect=AssertionError('HTTP delivery attempted')):
+                            with patch.dict(os.environ, {'SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED': 'true'}):
+                                self.assertEqual(send_synthetic_orders.run(['--check-webhook-config']),
+                                                 {'webhook_config': 'valid', 'database': 'not checked',
+                                                  'delivery': 'not attempted'})
+                                with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL': ''}):
+                                    with self.assertRaisesRegex(ValueError, 'not configured'):
+                                        send_synthetic_orders.run(['--check-webhook-config'])
+                                with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL':
+                                                             'http://hooks.slack.com/services/TEST/TEST/SYNTHETIC'}):
+                                    with self.assertRaisesRegex(ValueError, 'not configured'):
+                                        send_synthetic_orders.run(['--check-webhook-config'])
+                                with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL':
+                                                             'https://hooks.slack.com:SECRET_TOKEN/services/TEST/TEST/SYNTHETIC'}):
+                                    with self.assertRaisesRegex(ValueError, '^Slack webhook is not configured$'):
+                                        send_synthetic_orders.run(['--check-webhook-config'])
+                                with patch.dict(os.environ, {'SLACK_TEST_ORDER_WEBHOOK_URL': real_webhook}):
+                                    with self.assertRaisesRegex(ValueError, 'must differ'):
+                                        send_synthetic_orders.run(['--check-webhook-config'])
+                                with patch.dict(os.environ, {'SLACK_ORDER_WEBHOOK_URL':
+                                                             'https://hooks.slack.com:SECRET_TOKEN/services/TEST/TEST/REAL'}):
+                                    with self.assertRaisesRegex(ValueError, '^Slack order webhook is invalid$'):
+                                        send_synthetic_orders.run(['--check-webhook-config'])
+                            with self.assertRaisesRegex(ValueError, 'disabled'):
+                                send_synthetic_orders.run(['--check-webhook-config'])
+                        sender.assert_not_called()
                         with self.assertRaisesRegex(ValueError, 'disabled'):
                             notices.deliver_synthetic_pending(cafe24.database, order_id, post=sender)
                         sender.assert_not_called()

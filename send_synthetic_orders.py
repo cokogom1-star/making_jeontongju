@@ -1,6 +1,7 @@
 """Inspect or deliver synthetic order notices from the configured database.
 
-Set VERIFY_DATABASE_URL to an explicit disposable database URL. Sending also
+Read-only --check-webhook-config needs no database. Other actions require
+VERIFY_DATABASE_URL to name an explicit disposable database. Sending also
 requires SYNTHETIC_ORDER_NOTIFICATIONS_ENABLED=true and a separate
 SLACK_TEST_ORDER_WEBHOOK_URL. This command never polls real order channels.
 """
@@ -37,10 +38,16 @@ def run(argv=None):
     action.add_argument('--pending', action='store_true', help='show ready, deferred and leased synthetic notices')
     action.add_argument('--inspect', metavar='TEST-ID', help='read the state of one exact synthetic notice')
     action.add_argument('--send', metavar='TEST-ID', help='attempt one exact synthetic notice')
+    action.add_argument('--check-webhook-config', action='store_true',
+                        help='validate test webhook settings without DB or HTTP access')
     args = parser.parse_args(argv)
     selected_id = args.send if args.send is not None else args.inspect
     if selected_id is not None:
         notices._valid_synthetic_id(selected_id)
+    if args.check_webhook_config:
+        notices.synthetic_webhook_config()
+        return {'webhook_config': 'valid', 'database': 'not checked',
+                'delivery': 'not attempted'}
     connect = _verify_database()
     if args.pending:
         return notices.synthetic_pending_counts(connect)
