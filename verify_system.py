@@ -49,7 +49,7 @@ def main():
         import psycopg
         from psycopg import sql
         from psycopg.conninfo import conninfo_to_dict, make_conninfo
-        from cryptography.fernet import Fernet
+        from cryptography.fernet import Fernet, InvalidToken
         import requests
         info = conninfo_to_dict(dsn)
         dbname = info.get('dbname', '').lower()
@@ -229,6 +229,42 @@ def main():
                         self.assertNotIn('synthetic-access', text)
                     with patch.object(cafe24.requests, 'get', return_value=response(status=500)):
                         self.assertEqual(self.get('/products/1').status_code, 503)
+
+                def test_catalog_failure_logs_only_fixed_reason_codes(self):
+                    private = 'postgresql://user:synthetic-token@private.invalid/ourisul'
+                    cases = (
+                        (psycopg.OperationalError(private), 'database_error'),
+                        (InvalidToken(private), 'token_error'),
+                        (KeyError(private), 'missing_data_or_config'),
+                        (requests.Timeout(private), 'provider_timeout'),
+                        (requests.HTTPError(private, response=Mock(status_code=401, url=private,
+                                                                   text=private)), 'provider_http_401'),
+                        (requests.HTTPError(private, response=Mock(status_code=503, url=private,
+                                                                   text=private)), 'provider_http_5xx'),
+                        (requests.HTTPError(private), 'provider_http_other'),
+                        (requests.ConnectionError(private), 'provider_connection_error'),
+                        (ValueError(private), 'invalid_data_or_config'),
+                        (RuntimeError(private), 'unexpected_error'),
+                    )
+                    for failure, reason in cases:
+                        with self.subTest(reason=reason), patch('app.public_catalog', side_effect=failure), \
+                                self.assertLogs(app.logger, level='ERROR') as logged:
+                            listing = self.get('/products')
+                            detail = self.get('/products/1')
+                        self.assertEqual(listing.status_code, 200)
+                        self.assertEqual(detail.status_code, 503)
+                        for page in (listing, detail):
+                            self.assertIn('상품 정보를 불러오지 못했습니다.', page.get_data(as_text=True))
+                            self.assertNotIn(private, page.get_data(as_text=True))
+                        self.assertEqual(len(logged.records), 2)
+                        self.assertEqual([record.getMessage() for record in logged.records],
+                                         [f'Catalog request failed: reason={reason}'] * 2)
+                        self.assertTrue(all(record.exc_info is None for record in logged.records))
+                        self.assertNotIn(private, str(logged.records))
+                    with patch('app.public_catalog', return_value=([], False)):
+                        healthy = self.get('/products')
+                    self.assertEqual(healthy.status_code, 200)
+                    self.assertIn('등록된 상품이 없습니다.', healthy.get_data(as_text=True))
 
                 def test_catalog_invalid_rows_duplicate_and_unsafe_image(self):
                     valid = {'product_no': 7, 'display': 'T', 'product_name': 'Visible unique item',

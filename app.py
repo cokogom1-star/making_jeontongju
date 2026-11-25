@@ -5,6 +5,9 @@ import os
 import re
 from urllib.parse import urlparse
 
+import psycopg
+import requests
+from cryptography.fernet import InvalidToken
 from flask import Flask, abort, render_template_string, request
 
 app = Flask(__name__)
@@ -37,12 +40,36 @@ def purchase_enabled(product):
             and '샘플' not in product['name'] and bool(product['mall_url']))
 
 
+def catalog_failure_reason(error):
+    """Return only fixed diagnostic codes; exception text may contain secrets."""
+    if isinstance(error, psycopg.Error):
+        return 'database_error'
+    if isinstance(error, InvalidToken):
+        return 'token_error'
+    if isinstance(error, KeyError):
+        return 'missing_data_or_config'
+    if isinstance(error, requests.Timeout):
+        return 'provider_timeout'
+    if isinstance(error, requests.HTTPError):
+        status = getattr(getattr(error, 'response', None), 'status_code', None)
+        if type(status) is int and status in (401, 403, 429):
+            return f'provider_http_{status}'
+        if type(status) is int and 500 <= status <= 599:
+            return 'provider_http_5xx'
+        return 'provider_http_other'
+    if isinstance(error, requests.RequestException):
+        return 'provider_connection_error'
+    if isinstance(error, ValueError):
+        return 'invalid_data_or_config'
+    return 'unexpected_error'
+
+
 def products_for_page(product_no=None, page=1, with_next=False):
     try:
         fetched = public_catalog(product_no, page=page, with_next=with_next)
         products, has_next = fetched if with_next else (fetched, False)
-    except Exception:
-        app.logger.error('Catalog request failed')
+    except Exception as error:
+        app.logger.error('Catalog request failed: reason=%s', catalog_failure_reason(error))
         return [], '상품 정보를 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.', False
     if products is None:
         return [], '상품 준비 중입니다. 카페24 연결 후 이곳에 상품이 표시됩니다.', False
