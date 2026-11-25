@@ -1,5 +1,18 @@
 # Handoff
 
+## Catalog failure diagnostics
+
+Public catalog recovery still shows the same safe message when a read fails.
+The server now logs only a fixed reason code for database, token, missing
+data/configuration, provider timeout, provider HTTP status bucket, provider
+connection, invalid data/configuration, or unexpected errors. It never logs
+the exception text, request URL, credentials, or token. A reason code narrows
+the failure class but does not identify the precise cause.
+The disposable verifier injects each failure and checks both the public list
+and detail recovery plus exact log messages. This improves diagnosis of the
+observed live catalog failure; it does not establish its cause or repair the
+underlying connection. Exact-head CI is required before promotion.
+
 ## Synthetic Slack webhook configuration preflight
 
 `python send_synthetic_orders.py --check-webhook-config` checks the synthetic
