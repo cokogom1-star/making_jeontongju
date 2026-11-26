@@ -13,6 +13,12 @@ from test_orders import SCENARIO_ITEMS, TRACKING_STYLE, order_snapshot, record_t
 bp = Blueprint('customer_order', __name__)
 ID = re.compile(r'TEST-[0-9a-f]{32}\Z')
 MAX_OWNED = 8
+STATUS_GUIDANCE = {
+    'TEST_CREATED': '가상 주문이 기록되었습니다. 아직 준비 단계로 바뀌지 않았습니다.',
+    'TEST_PREPARED': '관리자가 가상 준비 완료를 기록했습니다. 실제 상품 준비는 아닙니다.',
+    'TEST_SHIPPED': '관리자가 가상 발송 처리를 기록했습니다. 실제 택배 발송은 아닙니다.',
+    'TEST_DELIVERED': '관리자가 가상 배송 완료를 기록했습니다. 실제 수령 확인은 아닙니다.',
+}
 
 
 def enabled():
@@ -86,6 +92,8 @@ PAGE = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <p>가상 기록 ID: <strong>{{snapshot.order_id}}</strong></p>
 <ul>{% for item in snapshot['items'] %}<li>{{item.name}} · {{item.quantity}}개</li>{% endfor %}</ul>
 <p>시연 상태: <strong>{{snapshot.status}}</strong></p>
+<p>{{status_guidance}}</p>
+<p><a href="{{url_for('customer_order.receipt', order_id=snapshot.order_id)}}">이 ID의 최신 가상 상태 다시 확인</a></p>
 <h2>가상 상태 이력</h2><ol>{% for event in snapshot.events %}
 <li>{{event.to_status}}<small>버전 {{event.version}} · {{event.created_at}}</small></li>
 {% endfor %}</ol>
@@ -210,4 +218,5 @@ def receipt(order_id):
         return error(503, '지금 기록을 조회할 수 없습니다. 잠시 후 같은 ID로 다시 확인해 주세요.', order_id)
     if snapshot is None:
         return error(404, '기록이 확인되지 않습니다. 저장을 시도했다면 같은 요청을 다시 제출해 주세요.', order_id)
-    return show('가상 주문 기록', 'receipt', snapshot=snapshot)
+    return show('가상 주문 기록', 'receipt', snapshot=snapshot,
+                status_guidance=STATUS_GUIDANCE.get(snapshot['status'], '가상 상태 기록을 확인해 주세요.'))
