@@ -92,21 +92,33 @@ def public_catalog(product_no=None, page=1, with_next=False):
         token = json.loads(Fernet(os.environ['TOKEN_ENCRYPTION_KEY']).decrypt(row[0].encode()))
         path = '/admin/products' + (('/' + str(product_no)) if product_no else '')
         def fetch():
-            return requests.get(api_base() + path,
-                                headers={'Authorization': 'Bearer ' + token['access_token']},
-                                params=None if product_no else {'limit': 25 if with_next else 24,
-                                                                  'offset': (page - 1) * 24, 'display': 'T'},
-                                timeout=(5, 20))
+            try:
+                return requests.get(api_base() + path,
+                                    headers={'Authorization': 'Bearer ' + token['access_token']},
+                                    params=None if product_no else {'limit': 25 if with_next else 24,
+                                                                      'offset': (page - 1) * 24, 'display': 'T'},
+                                    timeout=(5, 20))
+            except requests.RequestException as error:
+                error.catalog_stage = 'catalog_fetch'
+                raise
 
         response = fetch()
         if response.status_code == 401:
-            token = exchange({'grant_type': 'refresh_token', 'refresh_token': token['refresh_token']})
+            try:
+                token = exchange({'grant_type': 'refresh_token', 'refresh_token': token['refresh_token']})
+            except requests.RequestException as error:
+                error.catalog_stage = 'oauth_refresh'
+                raise
             save_token(conn, token)
             conn.commit()
             response = fetch()
         if response.status_code == 404 and product_no:
             return []
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.RequestException as error:
+            error.catalog_stage = 'catalog_fetch'
+            raise
         data = response.json()
         if not isinstance(data, dict):
             raise ValueError('Invalid Cafe24 catalog response')
