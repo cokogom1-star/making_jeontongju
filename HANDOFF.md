@@ -1,5 +1,25 @@
 # Handoff
 
+## Fictional customer receipt status guide
+
+The session-owned `/order-rehearsal/<TEST-ID>/receipt` now explains each saved
+simulated stage in plain Korean while retaining the raw status code. A visible
+same-ID link refreshes the latest saved snapshot with a read-only GET, so a
+visitor can check an administrator's later simulated transition. The link
+stays within the existing session ownership gate and dedicated rehearsal
+database; it creates no new order, event, or Slack notice. It does not claim
+real fulfillment, shipment, delivery, or Slack receipt.
+
+The presentation follows the pattern of a returnable order status page in
+[Shopify's order status page guidance](https://help.shopify.com/en/manual/fulfillment/setup/order-status-page)
+and plain-language stage descriptions in
+[Shop's order status guide](https://help.shop.app/en/shop/delivery-tracking/view-order-status).
+Those references concern real commerce, while this route remains explicitly
+fictional and feature gated. The disposable verifier checks a saved transition
+appears on refresh without adding rows to the five ledgers; the 320 px Chromium
+verifier checks keyboard refresh, page width, and unchanged ledger rows. An
+exact-head CI run is still required before promotion.
+
 ## Catalog HTTP failure stage and status
 
 The live catalog failure observed after the prior diagnostics release logged

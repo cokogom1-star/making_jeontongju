@@ -521,6 +521,7 @@ def main():
                     assert 'Slack' not in page.locator('main').inner_text()
                     customer_created = saved_rows(customer_database)
                     assert page.locator('main strong').last.inner_text() == 'TEST_CREATED'
+                    assert '가상 주문이 기록되었습니다.' in page.locator('main').inner_text()
                     assert page.locator('ol li').count() == 1
 
                     # Drive this same customer-owned ID through the exact-ID sender.
@@ -602,10 +603,22 @@ def main():
                     private_ok(page.goto(receipt_url))
                     check(page, '가상 주문 기록')
                     assert page.locator('main strong').last.inner_text() == 'TEST_DELIVERED'
+                    assert '실제 수령 확인은 아닙니다.' in page.locator('main').inner_text()
                     assert [entry.inner_text().split('버전')[0].strip()
                             for entry in page.locator('ol li').all()] == [
                                 'TEST_CREATED', 'TEST_PREPARED', 'TEST_SHIPPED', 'TEST_DELIVERED']
                     assert 'Slack' not in page.locator('main').inner_text()
+                    assert saved_rows(customer_database) == customer_final
+                    refresh = page.get_by_role('link', name='이 ID의 최신 가상 상태 다시 확인')
+                    assert refresh.get_attribute('href') == f'/order-rehearsal/{fictional_id}/receipt'
+                    refresh.focus()
+                    assert refresh.evaluate('(el) => document.activeElement === el')
+                    with page.expect_navigation() as navigation:
+                        page.keyboard.press('Enter')
+                    private_ok(navigation.value)
+                    check(page, '가상 주문 기록')
+                    assert page.url == receipt_url
+                    assert page.locator('main strong').last.inner_text() == 'TEST_DELIVERED'
                     assert saved_rows(customer_database) == customer_final
                     outsider = browser.new_context(viewport={'width': 320, 'height': 640},
                                                   is_mobile=True, has_touch=True)
@@ -639,7 +652,7 @@ def main():
             report['customer_synthetic_order_id'] = fictional_id
             report['checks'] = ['keyboard rehearsal and three transitions',
                                 'customer same-ID mock timeout, defer, retry, delivered and admin transitions',
-                                'customer final receipt, read-only lookup and cross-session denial',
+                                'customer final receipt, keyboard refresh, read-only lookup and cross-session denial',
                                 '320px document width on each page', 'lookup and receipt recovery',
                                 'receipt-to-mock-sender failure, defer, retry and recorded delivery',
                                 'pre-write and post-commit failure retry with five-ledger idempotency',

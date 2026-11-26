@@ -3212,6 +3212,9 @@ def main():
                         shown = self.get(receipt)
                         self.assertEqual(shown.status_code, 200)
                         self.assertIn('가상 주문 기록', shown.get_data(as_text=True))
+                        self.assertIn('가상 주문이 기록되었습니다.', shown.get_data(as_text=True))
+                        self.assertIn(f'href="/order-rehearsal/{draft["id"]}/receipt">이 ID의 최신 가상 상태 다시 확인</a>',
+                                      shown.get_data(as_text=True))
                         self.assertNotIn('Slack', shown.get_data(as_text=True))
                         self.assertNotIn('request_key', shown.get_data(as_text=True))
                         self.assertEqual(shown.headers['Cache-Control'], 'no-store')
@@ -3227,9 +3230,21 @@ def main():
                                                               (draft['id'],)).fetchone()[0], expected)
                         fulfillment.transition(draft['id'], 'TEST_PREPARED', 0,
                                                'customer-read-only-check', connect=lambda: psycopg.connect(isolated_dsn))
+                        with psycopg.connect(isolated_dsn) as conn:
+                            before_refresh = tuple(conn.execute('SELECT count(*) FROM ' + table + ' WHERE order_id=%s',
+                                (draft['id'],)).fetchone()[0] for table in (
+                                'ourisul_test_orders', 'ourisul_test_order_item', 'ourisul_test_order_state',
+                                'ourisul_test_order_event', 'ourisul_order_notice'))
                         updated = self.get(receipt).get_data(as_text=True)
                         self.assertIn('TEST_PREPARED', updated)
+                        self.assertIn('가상 준비 완료를 기록했습니다.', updated)
                         self.assertNotIn('TEST_SHIPPED', updated)
+                        with psycopg.connect(isolated_dsn) as conn:
+                            after_refresh = tuple(conn.execute('SELECT count(*) FROM ' + table + ' WHERE order_id=%s',
+                                (draft['id'],)).fetchone()[0] for table in (
+                                'ourisul_test_orders', 'ourisul_test_order_item', 'ourisul_test_order_state',
+                                'ourisul_test_order_event', 'ourisul_order_notice'))
+                        self.assertEqual(after_refresh, before_refresh)
                         second = app.test_client()
                         self.assertEqual(second.get(receipt, base_url='https://localhost').status_code, 404)
                         self.assertEqual(second.get('/order-rehearsal/lookup?order_id=' + draft['id'],
