@@ -1,5 +1,24 @@
 # Handoff
 
+## Catalog HTTP failure stage and status
+
+The live catalog failure observed after the prior diagnostics release logged
+`provider_http_other`; this remains an unclassified HTTP failure, not evidence
+of a database problem or a confirmed OAuth cause. Public catalog recovery now
+records a fixed `catalog_fetch` or `oauth_refresh` stage for provider request
+errors. HTTP 400, 401, 403, 404, 409, 422, and 429 have individual bounded
+reason codes; other 4xx statuses share `provider_http_4xx`. Provider 5xx
+continues to share `provider_http_5xx`. Missing or nonnumeric status remains
+`provider_http_other`. No URL, response body, exception text, or credential is
+logged. Provider errors outside the public catalog are not given a catalog
+stage. The same public recovery page remains in place. A new live log after
+deployment can narrow diagnosis; this change does not repair connectivity,
+renew expired authorization, or establish that reauthorization is needed.
+
+The disposable verifier covers catalog and refresh HTTP errors and timeouts,
+safe list/detail recovery, and a successful 401-refresh-retry. Exact-head CI
+and a later read-only live check are required before drawing a conclusion.
+
 ## Catalog failure diagnostics
 
 Public catalog recovery still shows the same safe message when a read fails.

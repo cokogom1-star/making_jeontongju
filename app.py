@@ -52,8 +52,10 @@ def catalog_failure_reason(error):
         return 'provider_timeout'
     if isinstance(error, requests.HTTPError):
         status = getattr(getattr(error, 'response', None), 'status_code', None)
-        if type(status) is int and status in (401, 403, 429):
+        if type(status) is int and status in (400, 401, 403, 404, 409, 422, 429):
             return f'provider_http_{status}'
+        if type(status) is int and 400 <= status <= 499:
+            return 'provider_http_4xx'
         if type(status) is int and 500 <= status <= 599:
             return 'provider_http_5xx'
         return 'provider_http_other'
@@ -64,12 +66,24 @@ def catalog_failure_reason(error):
     return 'unexpected_error'
 
 
+def catalog_failure_stage(error):
+    """Only provider calls may carry these fixed stage labels."""
+    if not isinstance(error, requests.RequestException):
+        return None
+    stage = getattr(error, 'catalog_stage', None)
+    return stage if stage in ('catalog_fetch', 'oauth_refresh') else None
+
+
 def products_for_page(product_no=None, page=1, with_next=False):
     try:
         fetched = public_catalog(product_no, page=page, with_next=with_next)
         products, has_next = fetched if with_next else (fetched, False)
     except Exception as error:
-        app.logger.error('Catalog request failed: reason=%s', catalog_failure_reason(error))
+        stage = catalog_failure_stage(error)
+        if stage:
+            app.logger.error('Catalog request failed: reason=%s stage=%s', catalog_failure_reason(error), stage)
+        else:
+            app.logger.error('Catalog request failed: reason=%s', catalog_failure_reason(error))
         return [], '상품 정보를 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.', False
     if products is None:
         return [], '상품 준비 중입니다. 카페24 연결 후 이곳에 상품이 표시됩니다.', False

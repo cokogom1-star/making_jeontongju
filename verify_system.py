@@ -95,7 +95,7 @@ def main():
                 value = Mock(status_code=status, text=text)
                 value.json.return_value = payload
                 if status >= 400:
-                    value.raise_for_status.side_effect = requests.HTTPError('Synthetic provider failure')
+                    value.raise_for_status.side_effect = requests.HTTPError('Synthetic provider failure', response=value)
                 else:
                     value.raise_for_status.return_value = None
                 return value
@@ -232,6 +232,8 @@ def main():
 
                 def test_catalog_failure_logs_only_fixed_reason_codes(self):
                     private = 'postgresql://user:synthetic-token@private.invalid/ourisul'
+                    forged_stage = requests.HTTPError(private, response=Mock(status_code=418))
+                    forged_stage.catalog_stage = private
                     cases = (
                         (psycopg.OperationalError(private), 'database_error'),
                         (InvalidToken(private), 'token_error'),
@@ -241,6 +243,7 @@ def main():
                                                                    text=private)), 'provider_http_401'),
                         (requests.HTTPError(private, response=Mock(status_code=503, url=private,
                                                                    text=private)), 'provider_http_5xx'),
+                        (forged_stage, 'provider_http_4xx'),
                         (requests.HTTPError(private), 'provider_http_other'),
                         (requests.ConnectionError(private), 'provider_connection_error'),
                         (ValueError(private), 'invalid_data_or_config'),
@@ -265,6 +268,50 @@ def main():
                         healthy = self.get('/products')
                     self.assertEqual(healthy.status_code, 200)
                     self.assertIn('등록된 상품이 없습니다.', healthy.get_data(as_text=True))
+
+                def test_catalog_http_failure_identifies_safe_stage_and_status(self):
+                    private = 'postgresql://user:synthetic-token@private.invalid/ourisul'
+                    refreshed = {'access_token': 'synthetic-new-access',
+                                 'refresh_token': 'synthetic-new-refresh',
+                                 'mall_id': env['CAFE24_MALL_ID']}
+                    cases = (
+                        ('catalog 403', [response(status=403)] * 2, None,
+                         'provider_http_403', 'catalog_fetch'),
+                        ('catalog 400', [response(status=400)] * 2, None,
+                         'provider_http_400', 'catalog_fetch'),
+                        ('refresh 400', [response(status=401)] * 2, response(status=400),
+                         'provider_http_400', 'oauth_refresh'),
+                        ('retry 403', [response(status=401), response(status=403)] * 2,
+                         response(refreshed), 'provider_http_403', 'catalog_fetch'),
+                        ('catalog timeout', [requests.Timeout(private)] * 2, None,
+                         'provider_timeout', 'catalog_fetch'),
+                        ('refresh timeout', [response(status=401)] * 2, requests.Timeout(private),
+                         'provider_timeout', 'oauth_refresh'),
+                    )
+                    for label, fetches, refresh, reason, stage in cases:
+                        with self.subTest(label=label), patch.object(cafe24.requests, 'get', side_effect=fetches), \
+                                patch.object(cafe24.requests, 'post', side_effect=refresh) if isinstance(
+                                    refresh, Exception) else patch.object(cafe24.requests, 'post', return_value=refresh), \
+                                self.assertLogs(app.logger, level='ERROR') as logged:
+                            listing = self.get('/products')
+                            detail = self.get('/products/1')
+                        self.assertEqual(listing.status_code, 200)
+                        self.assertEqual(detail.status_code, 503)
+                        for page in (listing, detail):
+                            self.assertIn('상품 정보를 불러오지 못했습니다.', page.get_data(as_text=True))
+                            self.assertNotIn(private, page.get_data(as_text=True))
+                        self.assertEqual([record.getMessage() for record in logged.records],
+                                         [f'Catalog request failed: reason={reason} stage={stage}'] * 2)
+                        self.assertTrue(all(record.exc_info is None for record in logged.records))
+                        self.assertNotIn(private, str(logged.records))
+                        self.assertNotIn('synthetic-new-access', str(logged.records))
+
+                    with patch.object(cafe24.requests, 'get', side_effect=[
+                            response(status=401), response({'products': []})]), patch.object(
+                            cafe24.requests, 'post', return_value=response(refreshed)), patch.object(
+                            app.logger, 'error') as log:
+                        self.assertEqual(self.get('/products').status_code, 200)
+                    log.assert_not_called()
 
                 def test_catalog_invalid_rows_duplicate_and_unsafe_image(self):
                     valid = {'product_no': 7, 'display': 'T', 'product_name': 'Visible unique item',
