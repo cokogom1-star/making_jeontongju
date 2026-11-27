@@ -81,6 +81,11 @@ PAGE = ('''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <label for="order_id">이 브라우저에서 기록한 가상 주문 ID 조회</label>
 <input id="order_id" name="order_id" pattern="TEST-[0-9a-f]{32}" required autocomplete="off" placeholder="TEST-…">
 <button>기록 조회</button></form>
+{% if recent_ids %}<section aria-labelledby="recent-orders-heading">
+<h2 id="recent-orders-heading">이 브라우저의 최근 가상 주문</h2>
+<p>이 브라우저에서 기록한 ID만 표시합니다. 각 링크에서 최신 가상 상태를 확인할 수 있습니다.</p>
+<ul>{% for order_id in recent_ids %}<li><a href="{{url_for('customer_order.receipt', order_id=order_id)}}">{{order_id}}</a></li>{% endfor %}</ul>
+</section>{% endif %}
 {% elif stage == 'review' %}
 <p>아직 저장되지 않았습니다. 수량을 확인한 뒤 기록하세요.</p>
 <ul>{% for item in items %}<li>{{item.name}} · {{item.quantity}}개</li>{% endfor %}</ul>
@@ -151,11 +156,24 @@ def items_for(scenario):
     return [{'name': SCENARIO_ITEMS[key], 'quantity': quantity} for key, quantity in scenario.items()]
 
 
+def recent_order_ids():
+    owned = session.get('customer_order_ids', [])
+    if not isinstance(owned, list):
+        return []
+    recent = []
+    for order_id in reversed(owned):
+        if isinstance(order_id, str) and ID.fullmatch(order_id) and order_id not in recent:
+            recent.append(order_id)
+            if len(recent) == MAX_OWNED:
+                break
+    return recent
+
+
 @bp.get('/order-rehearsal')
 def start():
     draft = {'id': 'TEST-' + secrets.token_hex(16), 'csrf': secrets.token_urlsafe(32)}
     session['customer_draft'] = draft
-    return show('가상 주문 연습', 'choose', draft=draft)
+    return show('가상 주문 연습', 'choose', draft=draft, recent_ids=recent_order_ids())
 
 
 @bp.post('/order-rehearsal/review')

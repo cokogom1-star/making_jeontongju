@@ -1,5 +1,25 @@
 # Handoff
 
+## Recent fictional orders in the same browser
+
+The feature-gated `/order-rehearsal` start page now lists up to eight confirmed
+fictional order IDs from its signed browser session, newest first, as exact-ID
+receipt links. It ignores malformed and duplicate session IDs. The list comes
+only from session data, without a database read; opening a receipt still uses
+the existing ownership gate and read-only snapshot. An unconfirmed draft is
+not listed, manual ID lookup remains available, and another browser session
+cannot see or open these links. A link can lead to the existing 404 recovery if
+the disposable sandbox record has since been removed. The page does not expose
+the internal Slack notice queue, webhook details, or administrator controls.
+
+The discoverable order list is informed by the Orders view described in
+[Shop's order status guidance](https://help.shop.app/en/shop/delivery-tracking/view-order-status),
+adapted here only for explicitly fictional records in one browser session.
+The disposable verifier checks reverse order, the eight-link bound, filtering,
+no database read for listing, and cross-session absence. The 320 px Chromium
+verifier follows a recent-ID link by keyboard and checks the five ledgers stay
+unchanged. Exact-head CI is required before promotion.
+
 ## Fictional customer receipt status guide
 
 The session-owned `/order-rehearsal/<TEST-ID>/receipt` now explains each saved

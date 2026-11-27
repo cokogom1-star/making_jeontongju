@@ -627,8 +627,24 @@ def main():
                     denied = outsider_page.goto(receipt_url)
                     assert denied.status == 404
                     assert '가상 청주 · 2개' not in outsider_page.locator('main').inner_text()
+                    private_ok(outsider_page.goto(base + '/order-rehearsal'))
+                    assert outsider_page.get_by_role('heading', name='이 브라우저의 최근 가상 주문').count() == 0
                     outsider.close()
-                    page.goto(base + '/order-rehearsal')
+                    private_ok(page.goto(base + '/order-rehearsal'))
+                    check(page, '가상 주문 연습')
+                    recent = page.get_by_role('link', name=fictional_id)
+                    assert recent.count() == 1
+                    assert recent.get_attribute('href') == f'/order-rehearsal/{fictional_id}/receipt'
+                    recent.focus()
+                    assert recent.evaluate('(el) => document.activeElement === el')
+                    with page.expect_navigation() as navigation:
+                        page.keyboard.press('Enter')
+                    private_ok(navigation.value)
+                    check(page, '가상 주문 기록')
+                    assert page.url == receipt_url
+                    assert page.locator('main strong').last.inner_text() == 'TEST_DELIVERED'
+                    assert saved_rows(customer_database) == customer_final
+                    private_ok(page.goto(base + '/order-rehearsal'))
                     lookup = page.locator('input[name="order_id"][type="text"]')
                     # Browser chooses the first text-compatible ID input.
                     if lookup.count() == 0:
@@ -652,7 +668,7 @@ def main():
             report['customer_synthetic_order_id'] = fictional_id
             report['checks'] = ['keyboard rehearsal and three transitions',
                                 'customer same-ID mock timeout, defer, retry, delivered and admin transitions',
-                                'customer final receipt, keyboard refresh, read-only lookup and cross-session denial',
+                                'customer final receipt, keyboard refresh and recent-ID link, read-only lookup and cross-session denial',
                                 '320px document width on each page', 'lookup and receipt recovery',
                                 'receipt-to-mock-sender failure, defer, retry and recorded delivery',
                                 'pre-write and post-commit failure retry with five-ledger idempotency',

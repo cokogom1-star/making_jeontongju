@@ -3263,6 +3263,25 @@ def main():
                             self.assertIn('같은 가상 기록 요청 다시 시도', failed.get_data(as_text=True))
                         self.assertEqual(self.post('/order-rehearsal/confirm', data={
                             'csrf': draft['csrf'], 'order_id': draft['id']}).status_code, 303)
+                        with (patch.object(customer_order, 'sandbox_database', side_effect=AssertionError('DB accessed')),
+                              patch.object(customer_order, 'order_snapshot', side_effect=AssertionError('DB read'))):
+                            recent_page = self.get('/order-rehearsal').get_data(as_text=True)
+                        self.assertIn('이 브라우저의 최근 가상 주문', recent_page)
+                        self.assertIn(f'href="{receipt}">{draft["id"]}</a>', recent_page)
+                        self.assertIn('name="order_id" pattern=', recent_page)
+                        ids = [draft['id']] + [f'TEST-{i:032x}' for i in range(1, 10)]
+                        with self.client.session_transaction() as sess:
+                            sess['customer_order_ids'] = ids + [ids[5], 'invalid-id']
+                        with patch.object(customer_order, 'sandbox_database', side_effect=AssertionError('DB accessed')):
+                            bounded = self.get('/order-rehearsal').get_data(as_text=True)
+                        expected_recent = [ids[5], ids[9], ids[8], ids[7], ids[6], ids[4], ids[3], ids[2]]
+                        recent_links = re.findall(r'<li><a href="/order-rehearsal/(TEST-[0-9a-f]{32})/receipt">', bounded)
+                        self.assertEqual(recent_links, expected_recent)
+                        self.assertNotIn('invalid-id', bounded)
+                        self.assertNotIn(ids[1], bounded)
+                        self.assertNotIn(draft['id'], bounded)
+                        other_start = app.test_client().get('/order-rehearsal', base_url='https://localhost')
+                        self.assertNotIn('이 브라우저의 최근 가상 주문', other_start.get_data(as_text=True))
                     with patch.dict(os.environ, {**sandbox_env,
                                                   'DATABASE_URL': isolated_dsn}):
                         self.assertEqual(self.get('/order-rehearsal').status_code, 404)
